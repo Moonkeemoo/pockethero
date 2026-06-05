@@ -1,0 +1,1692 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>PocketHero — Піксельна Мова (Pixel Legibility) Demo</title>
+<style>
+  html,body{margin:0;height:100%;background:#070a0f;overflow:hidden;
+            font-family:"Segoe UI",system-ui,sans-serif;color:#cfd6e0}
+  #c{display:block;width:100%;height:100%;image-rendering:pixelated;cursor:crosshair}
+  #tag{position:fixed;left:10px;top:8px;color:#cfd6e0;font-size:12px;opacity:.7;
+       background:#0008;padding:4px 8px;border-radius:6px;pointer-events:none;letter-spacing:.3px}
+  #toggle{position:fixed;right:14px;top:10px;z-index:5;
+       background:#16203a;color:#dfe8ff;border:1px solid #38507e;border-radius:8px;
+       padding:9px 14px;font:bold 13px system-ui;cursor:pointer;letter-spacing:.3px;
+       box-shadow:0 2px 8px #0007}
+  #toggle:hover{background:#1d2c4f;border-color:#5a7bc0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="tag">PocketHero · Піксельна Мова · легібельність пікселів</div>
+<button id="toggle" title="Tab / Space">Режим: НОВА МОВА  ⟲</button>
+<script>
+"use strict";
+/* ============================================================================
+   PocketHero — PIXEL LEGIBILITY DEMO  (before / after)
+   One file, vanilla JS + Canvas2D. Deterministic (Mulberry32 seed).
+   SIM logic and RENDER logic kept separate (ports cleanly to PixiJS).
+
+   PROBLEM (director): a creature's pixel COLORS don't clearly communicate WHAT
+   each pixel DOES — there is no legible mapping pixel -> capability/stat.
+
+   FIX: a 4-LAYER VISUAL LANGUAGE (color alone is insufficient; reinforce):
+     L1  Semantic colorblind-safe palette (Wong-based) -> NEW_PAL
+     L2  A hand-drawn pixel GLYPH baked into each cell -> GLYPHS
+     L3  BEHAVIOR = function: per-type idle animation   -> behaviorMod()
+     L4  CAUSAL FLARE (hero feature): the pixels that GRANT a move flare when
+         that move telegraphs/casts -> pixelsForMove() + flare state on px.
+
+   Plus: always-on LEGEND key, INSPECT-on-hover tooltip (+dim other types),
+   a static ROSTER STRIP (all 5 idle, large) and a LIVE FIGHT (hero vs rotating
+   opponent) so the causal flare is visible in action.
+
+   TOGGLE (button + Tab/Space): OLD (flat gauntlet palette, none of the layers)
+   <-> NEW (all 4 layers). Mode labelled on screen.
+
+   Reuses the gauntlet engine wholesale: deterministic ATB sim, event bus,
+   soft-body pixel creatures, 2.5D arena/camera/juice, deriveStats/deriveMoveset,
+   the 5 fighter builds.
+
+   SECTIONS:
+     0. TUNABLE CONSTANTS (director knobs incl. legibility knobs)
+     1. SEEDED RNG
+     2. PIXEL TYPES + PALETTES (OLD flat vs NEW semantic) + EFFECT words
+     3. MOVESET DATA + SCHOOLS + STATUSES
+     4. BUILD -> CAPABILITIES (deriveStats / deriveMoveset)
+     5. ROSTER (5 builds)
+     6. SIM (combatants, ATB, resolution, EVENT BUS)
+     7. LEGIBILITY CORE: pixelsForMove / glyph drawers / behavior / flare
+     8. RENDER: arena 2.5D, creature soft-body (4 layers), projectiles, VFX
+     9. UI: HP bars, floating text, log, LEGEND, INSPECT, MODE label
+    10. CAMERA / JUICE
+    11. SEQUENCER (live fight loop) + ROSTER STRIP
+    12. MAIN LOOP + INPUT
+   ========================================================================== */
+
+/* ============================================================================
+   0. TUNABLE CONSTANTS — director knobs
+   ========================================================================== */
+const SEED_BASE   = 1337;
+const PX          = 13;       // creature pixel size (base)
+const SPRING_K    = 240;
+const SPRING_D    = 15;
+const SHAKE_BASE  = 9;
+const SHAKE_CRIT  = 22;
+const HITSTOP_HIT = 0.055;
+const SLOWMO_CRIT = 0.30;
+const SLOWMO_KO   = 0.22;
+const ZOOM_PUNCH  = 0.14;
+const ZOOM_BREATH = 0.012;
+const ATB_GLOBAL  = 1.0;
+const CARD_DUR    = 0.0;      // no VS card in this demo (kept for parity)
+const RESULT_DUR  = 1.4;
+const BOSS_SCALE  = 1.6;
+const BOSS_CADENCE= 0.82;
+
+// --- LEGIBILITY KNOBS (the feel of the visual language) ---------------------
+const FLARE_INTENSITY  = 1.0;   // 0..1.5 brightness/scale of causal flare
+const FLARE_RISE       = 9.0;   // how fast a flare ramps up
+const FLARE_FALL       = 2.6;   // how fast it decays
+const GLYPH_MIN_CELL   = 9.0;   // px cell size below which glyph -> simple dot
+const GLYPH_SIZE_FRAC  = 0.62;  // glyph drawn at this fraction of the cell
+const BEHAV_AMP        = 1.0;   // global multiplier on idle behavior amplitude
+const INSPECT_DIM      = 0.22;  // alpha for non-hovered TYPES when inspecting
+const ROSTER_SCALE     = 1.9;   // how big roster-strip creatures render
+const FIGHT_REGION_TOP = 0.46;  // live fight ground sits in lower screen region
+
+/* ============================================================================
+   1. SEEDED RNG — Mulberry32
+   ========================================================================== */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let rng = mulberry32(SEED_BASE);
+const rnd  = () => rng();
+const rRange = (a,b) => a + (b-a)*rng();
+const rPick  = arr => arr[(rng()*arr.length)|0];
+
+/* ============================================================================
+   2. PIXEL TYPES + PALETTES + EFFECT WORDS
+   Two palettes for the OLD/NEW toggle:
+     OLD_PAL  = original flat gauntlet colours (the problem: blues/yellows
+                collide, nothing maps clearly to a capability).
+     NEW_PAL  = semantic, colourblind-safe (Wong-based). NOTE: Plate/Frost/Mana
+                are all blue-ish ON PURPOSE — color alone can't disambiguate
+                them; layers 2-3 (glyph + behaviour) do. That is the lesson.
+   Each type also carries a one-word UA EFFECT and a behaviour tag.
+   ========================================================================== */
+const TYPE_ORDER = ['core','vital','plate','force','swift','focus',
+                    'ember','frost','spark','mana','catalyst'];
+
+// OLD flat palette (from gauntlet.html) — deliberately ambiguous
+const OLD_PAL = {
+  core:'#f2c14e', vital:'#8a8f98', plate:'#4a78c8', force:'#e0483f',
+  swift:'#5fd38a', focus:'#f0e36b', ember:'#ff7a2a', frost:'#5ad6ff',
+  spark:'#c79bff', mana:'#b06bd6', catalyst:'#ffd24a'
+};
+
+// NEW semantic colourblind-safe palette (Wong-based, tuned for contrast)
+const NEW_PAL = {
+  core:'#F2C84B',     // gold — the heart/identity
+  vital:'#2FB873',    // green — life / HP
+  plate:'#7C8AA0',    // steel — armour (desaturated metallic blue-grey)
+  force:'#E0483F',    // vermillion — offense / attack
+  swift:'#F0C020',    // amber — agility / speed
+  focus:'#EAEFF5',    // near-white — crit / accuracy
+  ember:'#F07A1E',    // orange — fire
+  frost:'#39C6E8',    // bright cyan — ice
+  spark:'#9B6BD6',    // violet — lightning
+  mana:'#2D6FD0',     // deep blue — fuel  (collides w/ plate/frost on purpose)
+  catalyst:'#D14FA6', // magenta — amplify
+};
+
+// per-type metadata: UA name, one-word UA effect, glyph key, behaviour tag,
+//                     magic? (used for catalyst link), glyph-tint (for contrast)
+const PIX = {
+  core:    { name:'Ядро',        eff:'Серце',      glyph:'star',    behav:'core',   magic:false, tint:'#3a2c00' },
+  vital:   { name:'Тіло',        eff:'Здоровʼя',   glyph:'heart',   behav:'vital',  magic:false, tint:'#0a3a22' },
+  plate:   { name:'Броня',       eff:'Захист',     glyph:'shield',  behav:'plate',  magic:false, tint:'#1d2531' },
+  force:   { name:'Сила',        eff:'Атака',      glyph:'blade',   behav:'force',  magic:false, tint:'#3a0d0a' },
+  swift:   { name:'Спритність',  eff:'Швидкість',  glyph:'chevron', behav:'swift',  magic:false, tint:'#3a2e00' },
+  focus:   { name:'Фокус',       eff:'Точність',   glyph:'diamond', behav:'focus',  magic:false, tint:'#2a3340' },
+  ember:   { name:'Жар',         eff:'Вогонь',     glyph:'flame',   behav:'ember',  magic:true,  tint:'#3a1500' },
+  frost:   { name:'Мороз',       eff:'Лід',        glyph:'snow',    behav:'frost',  magic:true,  tint:'#06303a' },
+  spark:   { name:'Іскра',       eff:'Блискавка',  glyph:'bolt',    behav:'spark',  magic:true,  tint:'#2a123a' },
+  mana:    { name:'Мана',        eff:'Паливо',     glyph:'droplet', behav:'mana',   magic:true,  tint:'#06203a' },
+  catalyst:{ name:'Каталізатор', eff:'Підсилення', glyph:'ring',    behav:'catalyst',magic:true, tint:'#3a0d2a' },
+};
+
+// active palette pointer — flipped by the OLD/NEW toggle
+let PALETTE = NEW_PAL;
+function colorOfType(type){ return (PALETTE[type]) || '#888'; }
+
+// stat coefficients
+const STAT = {
+  hpBase: 60,  hpPerVital: 9,
+  armorPerPlate: 2.4,
+  atkBase: 6,  atkPerForce: 3.0,
+  spdBase: 0.82, spdPerSwift: 0.05,
+  dodgePerSwift: 0.035,  dodgeCap: 0.34,
+  critPerFocus: 0.05,    critCap: 0.45,
+  accPerFocus: 0.03,
+  magPerElement: 5.0,    magPerCatalyst: 4.0, magCatalystMul: 0.18,
+};
+
+/* ============================================================================
+   3. MOVESET DATA + SCHOOLS + STATUSES
+   ========================================================================== */
+const SCHOOL = {
+  fire:  { name:'Вогонь',    glyph:'🔥', col:'#F07A1E', col2:'#ffd24a', light:'#ff5a1e' },
+  frost: { name:'Лід',       glyph:'❄', col:'#39C6E8', col2:'#bff0ff', light:'#3aa6ff' },
+  spark: { name:'Блискавка', glyph:'⚡', col:'#9B6BD6', col2:'#ffffff', light:'#9b6bff' },
+};
+
+const MOVES = {
+  fist:  { kind:'fist',  icon:'👊', label:"б'є кулаком",          windUp:0.10, recover:0.18, power:9,  type:'phys', ranged:false, double:true,  weight:3.0,
+           req:()=>true },
+  sword: { kind:'sword', icon:'⚔️', label:"б'є мечем",            windUp:0.28, recover:0.34, power:20, type:'phys', ranged:false, critBonus:0.22, weight:2.0,
+           req:c=>count(c,'force')>=3 },
+  bow:   { kind:'bow',   icon:'🏹', label:"стріляє з лука",       windUp:0.22, recover:0.26, power:15, type:'phys', ranged:true,  weight:1.6,
+           req:c=>count(c,'swift')>=2 },
+  fire:  { kind:'fire',  icon:'🔥', label:"кастує Вогняну кулю",  windUp:0.40, recover:0.36, power:18, type:'magic',ranged:true,  school:'fire',  status:'burn',  weight:1.3,
+           req:c=>count(c,'ember')>=1 && count(c,'mana')>=1 },
+  frost: { kind:'frost', icon:'❄️', label:"кастує Крижану стрілу",windUp:0.40, recover:0.36, power:14, type:'magic',ranged:true,  school:'frost', status:'slow',  weight:1.3,
+           req:c=>count(c,'frost')>=1 && count(c,'mana')>=1 },
+  spark: { kind:'spark', icon:'⚡', label:"б'є Розрядом",         windUp:0.34, recover:0.34, power:16, type:'magic',ranged:true,  school:'spark', status:'shock', weight:1.2,
+           req:c=>count(c,'spark')>=1 && count(c,'mana')>=1 },
+};
+const MOVE_ORDER = ['fist','sword','bow','fire','frost','spark'];
+
+const STATUS_DEF = {
+  burn:  { uk:'Підпал',       glyph:'🔥', col:'#F07A1E', dur:4.2, tick:1.0, dmg:6 },
+  slow:  { uk:'Сповільнення', glyph:'❄', col:'#39C6E8', dur:5.0, tick:0,   dmg:0, atbMul:0.45 },
+  shock: { uk:'Шок',          glyph:'⚡', col:'#9B6BD6', dur:3.0, tick:0,   dmg:0, dmgTakenMul:1.5 },
+};
+
+/* ============================================================================
+   4. BUILD -> CAPABILITIES — pure derivation
+   ========================================================================== */
+function count(build, type){ let n=0; for(const p of build) if(p.type===type) n++; return n; }
+function adjacent(a, b){ return Math.abs(a.gx-b.gx)<=1 && Math.abs(a.gy-b.gy)<=1 && !(a.gx===b.gx&&a.gy===b.gy); }
+
+function deriveStats(build){
+  const c = t => count(build, t);
+  const vital=c('vital'), plate=c('plate'), force=c('force'), swift=c('swift'),
+        focus=c('focus'), catalyst=c('catalyst');
+  const elements = c('ember') + c('frost') + c('spark');
+  let mag = elements*STAT.magPerElement + catalyst*STAT.magPerCatalyst;
+  if(catalyst>0 && elements>0){
+    let adjEl=0;
+    for(const p of build){
+      if(p.type!=='ember'&&p.type!=='frost'&&p.type!=='spark') continue;
+      for(const q of build){ if(q.type==='catalyst' && adjacent(p,q)){ adjEl++; break; } }
+    }
+    mag *= (1 + STAT.magCatalystMul*catalyst);
+    mag += adjEl*3.0;
+  }
+  const maxHP  = Math.round(STAT.hpBase + vital*STAT.hpPerVital);
+  const armor  = +(plate*STAT.armorPerPlate).toFixed(1);
+  const atk    = STAT.atkBase + force*STAT.atkPerForce;
+  const speed  = STAT.spdBase + swift*STAT.spdPerSwift;
+  const dodge  = Math.min(STAT.dodgeCap, swift*STAT.dodgePerSwift);
+  const crit   = Math.min(STAT.critCap, focus*STAT.critPerFocus);
+  const acc    = focus*STAT.accPerFocus;
+  return { maxHP, armor, atk, speed, dodge, crit, acc, magic:+mag.toFixed(1),
+    counts:{ vital, plate, force, swift, focus, catalyst, elements } };
+}
+function deriveMoveset(build){
+  const set = [];
+  for(const k of MOVE_ORDER){ if(MOVES[k].req(build)) set.push(k); }
+  return set;
+}
+function effectivePower(f, move){
+  if(move.type==='magic') return move.power + f.stats.magic;
+  return move.power + f.stats.atk - STAT.atkBase;
+}
+
+/* ============================================================================
+   5. ROSTER — five fighters
+   ========================================================================== */
+function B(rows){ return rows.map(([gx,gy,type])=>({gx,gy,type})); }
+
+const HERO_BUILD = B([
+  [0,0,'core'],
+  [-1,0,'vital'],[0,1,'vital'],[-1,1,'vital'],[1,1,'vital'],
+  [-1,2,'vital'],[0,2,'vital'],[1,2,'vital'],
+  [-2,1,'plate'],[-2,2,'plate'],
+  [1,0,'force'],[2,0,'force'],[3,0,'force'],
+  [0,-1,'focus'],
+  [2,-1,'ember'],[1,-1,'mana'],
+  [-1,3,'vital'],[1,3,'vital'],
+]);
+const BRUTE_BUILD = B([
+  [0,0,'core'],
+  [-1,0,'vital'],[1,0,'vital'],
+  [-2,1,'vital'],[-1,1,'vital'],[0,1,'vital'],[1,1,'vital'],[2,1,'vital'],
+  [-2,2,'vital'],[-1,2,'vital'],[0,2,'vital'],[1,2,'vital'],[2,2,'vital'],
+  [-2,3,'vital'],[-1,3,'vital'],[0,3,'vital'],[1,3,'vital'],[2,3,'vital'],
+  [-3,1,'plate'],[-3,2,'plate'],[-3,3,'plate'],
+  [3,1,'plate'],[3,2,'plate'],[3,3,'plate'],
+  [-1,-1,'plate'],[0,-1,'plate'],[1,-1,'plate'],
+  [2,0,'force'],[3,0,'force'],[4,0,'force'],
+  [-1,4,'vital'],[1,4,'vital'],
+]);
+const RANGER_BUILD = B([
+  [0,0,'core'],
+  [0,-1,'vital'],[0,1,'vital'],[0,2,'vital'],[0,3,'vital'],
+  [-1,0,'swift'],[1,0,'swift'],[-1,1,'swift'],[1,2,'swift'],
+  [0,-2,'focus'],[-1,-1,'focus'],[1,-1,'focus'],
+  [1,1,'force'],[-1,2,'force'],
+  [0,4,'plate'],
+  [-1,4,'swift'],[1,4,'swift'],
+]);
+const MAGE_BUILD = B([
+  [0,0,'core'],
+  [0,1,'vital'],[-1,1,'vital'],[1,1,'vital'],
+  [0,2,'vital'],
+  [-1,0,'ember'],[1,0,'frost'],
+  [-1,-1,'ember'],[1,-1,'frost'],
+  [0,-1,'catalyst'],
+  [-2,0,'mana'],[2,0,'mana'],
+  [-1,2,'vital'],[1,2,'vital'],
+]);
+const COLOSSUS_BUILD = B([
+  [0,0,'core'],
+  [-1,0,'vital'],[1,0,'vital'],[-2,0,'vital'],[2,0,'vital'],
+  [-2,1,'vital'],[-1,1,'vital'],[0,1,'vital'],[1,1,'vital'],[2,1,'vital'],
+  [-2,2,'vital'],[-1,2,'vital'],[0,2,'vital'],[1,2,'vital'],[2,2,'vital'],
+  [-2,3,'vital'],[-1,3,'vital'],[0,3,'vital'],[1,3,'vital'],[2,3,'vital'],
+  [-3,0,'plate'],[-3,1,'plate'],[-3,2,'plate'],[-3,3,'plate'],
+  [3,0,'plate'],[3,1,'plate'],[3,2,'plate'],[3,3,'plate'],
+  [-1,-1,'plate'],[0,-1,'plate'],[1,-1,'plate'],
+  [3,-1,'force'],[4,-1,'force'],[4,0,'force'],
+  [-3,-1,'swift'],[-4,-1,'swift'],[-4,0,'swift'],
+  [0,-2,'focus'],[-1,-2,'focus'],[1,-2,'focus'],
+  [-2,-1,'ember'],[2,-1,'frost'],[0,-3,'spark'],
+  [-1,-3,'mana'],[1,-3,'mana'],[0,-1,'mana'],
+  [-1,-2,'catalyst'],[1,-2,'catalyst'],
+  [-2,4,'vital'],[-1,4,'vital'],[1,4,'vital'],[2,4,'vital'],
+]);
+
+const ROSTER = {
+  hero:    { id:'hero',    name:'«Піксель»',  arch:'Універсал',   build:HERO_BUILD,     scale:1.0,        accent:'#add0ff', side:-1 },
+  brute:   { id:'brute',   name:'«Громило»',  arch:'Громило',     build:BRUTE_BUILD,    scale:1.12,       accent:'#e08a5a', side:+1 },
+  ranger:  { id:'ranger',  name:'«Стрілець»', arch:'Стрілець',    build:RANGER_BUILD,   scale:0.94,       accent:'#7fe0a0', side:+1 },
+  mage:    { id:'mage',    name:'«Чаклун»',   arch:'Чаклун',      build:MAGE_BUILD,     scale:0.9,        accent:'#cfa0ff', side:+1 },
+  colossus:{ id:'colossus',name:'«Колос»',    arch:'Колос (БОС)', build:COLOSSUS_BUILD, scale:BOSS_SCALE, accent:'#ff6b6b', side:+1, boss:true },
+};
+const STAGE_ORDER = ['brute','ranger','mage','colossus'];
+const ROSTER_ORDER = ['hero','brute','ranger','mage','colossus'];
+
+/* ============================================================================
+   6. SIM — combatants, ATB loop, resolution, EVENT BUS
+   ========================================================================== */
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W, H, ground;
+function resize(){
+  W = cv.width = innerWidth; H = cv.height = innerHeight;
+  ground = H*0.70;            // live-fight ground line (lower band of screen)
+}
+addEventListener('resize', resize); resize();
+
+function makeFighter(entry){
+  const stats = deriveStats(entry.build);
+  const moveset = deriveMoveset(entry.build);
+  const side = entry.side;
+  const scale = entry.scale;
+  return {
+    id: entry.id, name: entry.name, arch: entry.arch, accent: entry.accent,
+    side, face: side<0 ? 1 : -1, scale, boss: !!entry.boss,
+    homeX: side<0 ? W*0.32 : W*0.68,
+    build: entry.build, stats, moveset,
+    maxHP: stats.maxHP, hp: stats.maxHP, armor: stats.armor,
+    speed: stats.speed * (entry.boss?BOSS_CADENCE:1) * (side<0?1.06:1.0),
+    atb: side<0 ? 0.10 : 0.0,
+    statuses: [],
+    moveCursor: (side<0?0:1),
+    // soft-body render state + per-pixel FLARE field (layer 4)
+    px: entry.build.map(p => ({ gx:p.gx, gy:p.gy, t:p.type, ox:0,oy:0,vx:0,vy:0, flare:0 })),
+    advance:0, knock:0, knockV:0,
+    hpShown:stats.maxHP, hpChip:stats.maxHP, chipDelay:0,
+    flash:0, charge:0, chargeSchool:null, squash:0, alive:true,
+  };
+}
+
+let hero, enemy, fighters = [];
+
+// --- EVENT BUS ---
+const events = [];
+function emit(e){ events.push(e); }
+
+let phase = 'fight';
+let winner = null;
+const actors = [];
+const projectiles = [];
+
+function pickMove(f){
+  const ms = f.moveset;
+  const pool = [];
+  for(let i=0;i<ms.length;i++){
+    const k = ms[i];
+    let w = MOVES[k].weight;
+    if(i === f.moveCursor % ms.length) w *= 3.0;
+    for(let j=0;j<w*10;j++) pool.push(k);
+  }
+  f.moveCursor++;
+  return MOVES[rPick(pool)];
+}
+
+function startAction(f){
+  const tgt = (f===hero) ? enemy : hero;
+  const move = pickMove(f);
+  actors.push({ f, tgt, move, t:0, stage:'windup', fired:false });
+  f.squash = (move.type==='magic' || move.kind==='sword') ? 1 : 0.5;
+  if(move.type==='magic'){ f.charge = 0.0001; f.chargeSchool = move.school; }
+  // LAYER 4: ignite the responsible pixels for this move (causal flare)
+  flareMovePixels(f, move.kind, 1.0);
+  emit({ kind:'telegraph', source:f, move });
+}
+
+function resolveHit(f, tgt, move){
+  const slowed = tgt.statuses.some(s=>s.key==='slow');
+  const dodge = Math.max(0.02, tgt.stats.dodge - (slowed?0.07:0));
+  const acc   = f.stats.acc;
+  const hitChance = 0.92 - dodge + acc;
+  const isHit = rnd() < hitChance;
+  if(!isHit){
+    emit({ kind:'resolve', move, source:f, target:tgt, hit:false, dodge:true, crit:false, damage:0 });
+    return;
+  }
+  const critChance = f.stats.crit + (move.critBonus||0);
+  const isCrit = rnd() < critChance;
+  let dmg = effectivePower(f, move) + Math.floor(rRange(-2,3));
+  if(move.type==='phys') dmg = Math.max(1, dmg - tgt.armor);
+  else                   dmg = Math.max(1, dmg);
+  if(isCrit) dmg = Math.round(dmg * 1.8);
+  const shock = tgt.statuses.find(s=>s.key==='shock');
+  let shockAmp = false;
+  if(shock){ dmg = Math.round(dmg * STATUS_DEF.shock.dmgTakenMul); shockAmp = true;
+             tgt.statuses.splice(tgt.statuses.indexOf(shock),1); }
+  dmg = Math.round(dmg);
+  applyDamage(tgt, dmg);
+  let appliedStatus = null;
+  if(move.status){ applyStatus(tgt, move.status); appliedStatus = move.status; }
+  emit({ kind:'resolve', move, source:f, target:tgt, hit:true, dodge:false,
+         crit:isCrit, damage:dmg, status:appliedStatus, shockAmp });
+  if(tgt.hp<=0 && tgt.alive){ killFighter(tgt, f); }
+}
+function applyDamage(tgt, dmg){
+  tgt.hp = Math.max(0, tgt.hp - dmg);
+  tgt.chipDelay = 0.45; tgt.flash = 1;
+}
+function applyStatus(tgt, key){
+  const def = STATUS_DEF[key];
+  const existing = tgt.statuses.find(s=>s.key===key);
+  if(existing){ existing.dur = def.dur; }
+  else tgt.statuses.push({ key, dur:def.dur, tickT: def.tick });
+}
+function killFighter(tgt, by){
+  tgt.alive = false; tgt.hp = 0;
+  winner = by;
+  triggerSlowmo(SLOWMO_KO, 1.1);
+  shake = SHAKE_CRIT*1.3;
+  const sc = depthScale(tgt) * tgt.scale;
+  const cx = creatureScreenX(tgt), cy = ground - 3.2*PX*tgt.scale;
+  for(const p of tgt.px){
+    debris.push({ x: cx + p.gx*PX*sc, y: cy + p.gy*PX*sc,
+      vx:(rnd()-.5)*520, vy:-(180+rnd()*420),
+      c: colorOfType(p.t), t:p.t, life:1.4+rnd()*0.8, sz:PX*tgt.scale });
+  }
+  emit({ kind:'ko', winner:by, loser:tgt });
+  startResult();
+}
+
+function simStep(dt){
+  for(const f of fighters){
+    if(!f.alive) continue;
+    for(let i=f.statuses.length-1;i>=0;i--){
+      const s = f.statuses[i]; const def = STATUS_DEF[s.key];
+      s.dur -= dt;
+      if(def.tick>0){
+        s.tickT -= dt;
+        if(s.tickT<=0 && f.hp>0){
+          s.tickT += def.tick;
+          const dmg = def.dmg;
+          f.hp = Math.max(0, f.hp - dmg); f.chipDelay=0.4; f.flash=0.6;
+          emit({ kind:'statusTick', target:f, status:s.key, damage:dmg });
+          if(f.hp<=0 && f.alive){ killFighter(f, (f===hero?enemy:hero)); }
+        }
+      }
+      if(s.dur<=0) f.statuses.splice(i,1);
+    }
+    if(!f.alive) continue;
+    let atbMul = 1;
+    for(const s of f.statuses){ const d=STATUS_DEF[s.key]; if(d.atbMul) atbMul*=d.atbMul; }
+    const busy = actors.some(a=>a.f===f);
+    if(!busy){
+      f.atb += dt * f.speed * 0.55 * ATB_GLOBAL * atbMul;
+      if(f.atb>=1){ f.atb=0; startAction(f); }
+    }
+  }
+  stepActors(dt);
+  stepProjectiles(dt);
+}
+
+function stepActors(dt){
+  for(let i=actors.length-1;i>=0;i--){
+    const a = actors[i]; a.t += dt; const m = a.move;
+    if(a.stage==='windup'){
+      a.f.charge = (m.type==='magic') ? Math.min(1, a.t/m.windUp) : 0;
+      // sustain the causal flare through the wind-up
+      flareMovePixels(a.f, m.kind, 1.0);
+      if(a.t>=m.windUp){ a.stage='release'; a.t=0; a.f.charge=0; releaseMove(a); }
+    } else if(a.stage==='release'){
+      if(a.t>=0.06){ a.stage='recover'; a.t=0; }
+    } else {
+      if(a.t>=m.recover){ actors.splice(i,1); }
+    }
+  }
+}
+
+function releaseMove(a){
+  const { f, tgt, move } = a;
+  for(const p of f.px){ p.vx += f.face*120; }
+  flareMovePixels(f, move.kind, 1.0);   // peak the flare at release
+  if(move.ranged){
+    spawnProjectile(f, tgt, move);
+  } else {
+    resolveHit(f, tgt, move);
+    if(move.double && rnd()<0.85){
+      setTimeout2(0.12, ()=>{ if(tgt.alive && phase==='fight') resolveHit(f, tgt, move); });
+    }
+    meleeImpactFX(f, tgt, move);
+  }
+}
+
+const delayed = [];
+function setTimeout2(sec, fn){ delayed.push({ t:sec, fn }); }
+function stepDelayed(dt){
+  for(let i=delayed.length-1;i>=0;i--){ const d=delayed[i]; d.t-=dt; if(d.t<=0){ d.fn(); delayed.splice(i,1);} }
+}
+
+function spawnProjectile(f, tgt, move){
+  const sx = creatureScreenX(f) + f.face*22*f.scale;
+  const sy = ground - 3.0*PX*f.scale;
+  const ex = creatureScreenX(tgt);
+  const ey = ground - 3.0*PX*tgt.scale;
+  const dist = Math.abs(ex-sx);
+  const speed = move.kind==='bow' ? 1300 : (move.kind==='spark'?1700:760);
+  const dur = Math.max(0.04, dist/speed);
+  projectiles.push({
+    move, f, tgt, sx, sy, ex, ey, t:0, dur,
+    arc: move.kind==='bow' ? 90 : (move.kind==='spark'?0:60),
+    school: move.school,
+    bolt: move.kind==='spark' ? makeBolt(sx,sy,ex,ey) : null,
+  });
+  if(move.school) emit({ kind:'cast', source:f, school:move.school });
+}
+
+function makeBolt(sx,sy,ex,ey){
+  const segs = 9; const main = [];
+  for(let i=0;i<=segs;i++){
+    const u=i/segs;
+    const x=sx+(ex-sx)*u;
+    const y=sy+(ey-sy)*u + (i>0&&i<segs ? (rnd()-0.5)*36 : 0);
+    main.push({x,y});
+  }
+  const forks = [];
+  for(let k=0;k<2;k++){
+    const i = 2 + ((rnd()*(segs-3))|0);
+    const o = main[i];
+    forks.push([ {x:o.x,y:o.y},
+                 {x:o.x+(rnd()-0.5)*40, y:o.y+(rnd()-0.5)*46},
+                 {x:o.x+(rnd()-0.5)*70, y:o.y+(rnd()-0.5)*70} ]);
+  }
+  return { main, forks };
+}
+
+function stepProjectiles(dt){
+  for(let i=projectiles.length-1;i>=0;i--){
+    const p = projectiles[i]; p.t += dt;
+    const u = p.t/p.dur;
+    if(u>=1){
+      resolveHit(p.f, p.tgt, p.move);
+      projectileImpactFX(p);
+      projectiles.splice(i,1);
+    }
+  }
+}
+
+/* ============================================================================
+   7. LEGIBILITY CORE — pixelsForMove / glyphs / behaviour / flare
+   This is the heart of the fix. All data-driven so it ports to PixiJS.
+   ========================================================================== */
+
+/* --- pixelsForMove(build|fighter, moveKey) -> array of px-indices ----------
+   Returns the indices of the pixels that GRANT / are RESPONSIBLE for a move.
+   Used by Layer 4 to flare exactly those cells when the move telegraphs.
+   Rules mirror the MOVES[].req() requirements:
+     fist  -> a couple of body/force pixels on the striking (facing) side
+     sword -> ALL force pixels (force>=3 grants it)
+     bow   -> ALL swift pixels (swift>=2 grants it)
+     fire  -> ALL ember + mana pixels
+     frost -> ALL frost + mana pixels
+     spark -> ALL spark + mana pixels
+   ------------------------------------------------------------------------- */
+function pixelsForMove(px, moveKey, face){
+  const idx = [];
+  const has = t => { for(let i=0;i<px.length;i++) if(px[i].t===t) idx.push(i); };
+  switch(moveKey){
+    case 'sword': has('force'); break;
+    case 'bow':   has('swift'); break;
+    case 'fire':  has('ember'); has('mana'); break;
+    case 'frost': has('frost'); has('mana'); break;
+    case 'spark': has('spark'); has('mana'); break;
+    case 'fist':
+    default: {
+      // a couple of force pixels nearest the striking side, else nearest body
+      const f = face || 1;
+      const cand = px.map((p,i)=>({i,p}))
+        .sort((a,b)=> (b.p.gx*f) - (a.p.gx*f));   // furthest toward facing first
+      let picked=0;
+      for(const c of cand){
+        if(c.p.t==='force' || c.p.t==='vital'){ idx.push(c.i); if(++picked>=2) break; }
+      }
+      if(idx.length===0 && px.length) idx.push(0);
+      break;
+    }
+  }
+  return idx;
+}
+
+// apply/raise the flare target on the responsible pixels of a fighter
+function flareMovePixels(f, moveKey, intensity){
+  const ids = pixelsForMove(f.px, moveKey, f.face);
+  for(const i of ids){ f.px[i].flareTarget = Math.max(f.px[i].flareTarget||0, intensity); }
+}
+
+// integrate per-pixel flare each frame (rise fast on target, then decay)
+function stepFlare(dt){
+  for(const f of fighters){
+    for(const p of f.px){
+      const tgt = p.flareTarget||0;
+      if(tgt>p.flare) p.flare += (tgt-p.flare)*Math.min(1, FLARE_RISE*dt);
+      p.flare = Math.max(0, p.flare - FLARE_FALL*dt);
+      p.flareTarget = 0;   // consumed; re-asserted by sim each frame while active
+      // small spark emission off bright flaring magic pixels (NEW mode only)
+      if(NEW_MODE && p.flare>0.65 && rnd()<0.25){
+        const s=depthScale(f)*f.scale;
+        const sx=creatureScreenX(f), baseY=ground-(1-depthScale(f))*120;
+        const x=sx+p.gx*PX*s, y=baseY-3.2*PX*s+p.gy*PX*s;
+        const col=colorOfType(p.t);
+        particles.push({ x, y, vx:(rnd()-.5)*70, vy:-(20+rnd()*60),
+          life:0.3+rnd()*0.3, col, sz:1.5+rnd()*2, grav:120, drag:0.05 });
+      }
+    }
+  }
+}
+
+/* --- LAYER 2: hand-drawn pixel GLYPHS ---------------------------------------
+   Each drawn with canvas paths/rects (NOT emoji), centred in a cell of size s,
+   in colour `col`. Degrades to a simple dot below GLYPH_MIN_CELL.
+   ------------------------------------------------------------------------- */
+function drawGlyph(key, x, y, s, col, alpha){
+  if(s < GLYPH_MIN_CELL){            // too small: simplified mark (a dot/pip)
+    ctx.globalAlpha = alpha*0.9;
+    ctx.fillStyle = col;
+    const r=Math.max(1, s*0.16);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    ctx.globalAlpha = 1; return;
+  }
+  const g = s*GLYPH_SIZE_FRAC*0.5;   // glyph half-extent
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = col; ctx.fillStyle = col;
+  ctx.lineWidth = Math.max(1, s*0.10);
+  ctx.lineJoin='round'; ctx.lineCap='round';
+  switch(key){
+    case 'heart': {           // ♥
+      ctx.beginPath();
+      ctx.moveTo(0, g*0.85);
+      ctx.bezierCurveTo(g*1.2, g*0.05, g*0.55,-g*0.95, 0,-g*0.15);
+      ctx.bezierCurveTo(-g*0.55,-g*0.95,-g*1.2, g*0.05, 0, g*0.85);
+      ctx.fill();
+      break;
+    }
+    case 'blade': {           // ⚔ upright blade + crossguard
+      ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(0,g*0.55); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.55,g*0.18); ctx.lineTo(g*0.55,g*0.18); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(-g*0.22,-g*0.55);
+      ctx.lineTo(g*0.22,-g*0.55); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'shield': {          // 🛡 shield outline
+      ctx.beginPath();
+      ctx.moveTo(0,-g); ctx.lineTo(g*0.8,-g*0.6); ctx.lineTo(g*0.8,g*0.25);
+      ctx.quadraticCurveTo(g*0.8,g*0.9, 0,g);
+      ctx.quadraticCurveTo(-g*0.8,g*0.9,-g*0.8,g*0.25);
+      ctx.lineTo(-g*0.8,-g*0.6); ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'chevron': {         // » double chevron (speed/wind)
+      ctx.beginPath();
+      ctx.moveTo(-g*0.7,-g*0.7); ctx.lineTo(g*0.05,0); ctx.lineTo(-g*0.7,g*0.7); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-g*0.05,-g*0.7); ctx.lineTo(g*0.7,0); ctx.lineTo(-g*0.05,g*0.7); ctx.stroke();
+      break;
+    }
+    case 'diamond': {         // ◆ crit/focus
+      ctx.beginPath();
+      ctx.moveTo(0,-g); ctx.lineTo(g*0.78,0); ctx.lineTo(0,g); ctx.lineTo(-g*0.78,0);
+      ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'flame': {           // 🔥 teardrop flame
+      ctx.beginPath();
+      ctx.moveTo(0,g);
+      ctx.bezierCurveTo(g*0.95,g*0.4, g*0.5,-g*0.4, 0,-g);
+      ctx.bezierCurveTo(-g*0.3,-g*0.3,-g*0.85,g*0.2, 0,g);
+      ctx.fill();
+      // inner notch implied by tint already handled by caller
+      break;
+    }
+    case 'snow': {            // ❄ six-spoke asterisk
+      for(let k=0;k<6;k++){
+        const a=k*Math.PI/3;
+        ctx.beginPath(); ctx.moveTo(0,0);
+        ctx.lineTo(Math.cos(a)*g, Math.sin(a)*g); ctx.stroke();
+        // little barbs
+        const bx=Math.cos(a)*g*0.6, by=Math.sin(a)*g*0.6;
+        const pa=a+Math.PI/2;
+        ctx.beginPath();
+        ctx.moveTo(bx-Math.cos(pa)*g*0.22, by-Math.sin(pa)*g*0.22);
+        ctx.lineTo(bx+Math.cos(pa)*g*0.22, by+Math.sin(pa)*g*0.22);
+        ctx.stroke();
+      }
+      break;
+    }
+    case 'bolt': {            // ⚡ lightning zigzag
+      ctx.beginPath();
+      ctx.moveTo(g*0.3,-g);
+      ctx.lineTo(-g*0.35,g*0.1);
+      ctx.lineTo(g*0.1,g*0.1);
+      ctx.lineTo(-g*0.3,g);
+      ctx.lineTo(g*0.4,-g*0.15);
+      ctx.lineTo(-g*0.05,-g*0.15);
+      ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'droplet': {         // 💧 mana droplet
+      ctx.beginPath();
+      ctx.moveTo(0,-g);
+      ctx.bezierCurveTo(g*0.75,g*0.05, g*0.55,g, 0,g);
+      ctx.bezierCurveTo(-g*0.55,g,-g*0.75,g*0.05, 0,-g);
+      ctx.fill();
+      break;
+    }
+    case 'ring': {            // ⊕ ring + plus (amplify)
+      ctx.beginPath(); ctx.arc(0,0,g*0.8,0,7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.45,0); ctx.lineTo(g*0.45,0);
+      ctx.moveTo(0,-g*0.45); ctx.lineTo(0,g*0.45); ctx.stroke();
+      break;
+    }
+    case 'star':
+    default: {                // ★ five-point star (core)
+      ctx.beginPath();
+      for(let k=0;k<10;k++){
+        const r=(k%2?g*0.45:g);
+        const a=-Math.PI/2 + k*Math.PI/5;
+        const px2=Math.cos(a)*r, py2=Math.sin(a)*r;
+        if(k===0) ctx.moveTo(px2,py2); else ctx.lineTo(px2,py2);
+      }
+      ctx.closePath(); ctx.fill();
+      break;
+    }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* --- LAYER 3: BEHAVIOUR = function (per-type idle animation) ----------------
+   Returns {bright, sx, sy, link} modifiers for a pixel of `type`, given a
+   phase clock and a per-pixel random offset. Subtle; layered over soft-body.
+   ------------------------------------------------------------------------- */
+function behaviorMod(type, clock, off){
+  const A = BEHAV_AMP;
+  let bright=0, sx=0, sy=0;
+  switch(type){
+    case 'vital':                                  // gentle heartbeat
+      { const b=Math.pow(Math.max(0,Math.sin(clock*2.2+off)),6);
+        bright=0.10*A*b; sx=sy=0.06*A*b; } break;
+    case 'core':                                   // steady warm glow + slow pulse
+      bright=(0.10+0.08*Math.sin(clock*1.6+off))*A; break;
+    case 'ember':                                  // warm flicker
+      bright=(0.12+0.18*Math.abs(Math.sin(clock*9+off)*Math.sin(clock*3.3+off)))*A; break;
+    case 'frost':                                  // cold shimmer
+      bright=(0.10+0.10*Math.sin(clock*4+off))*A; sx=0.03*A*Math.sin(clock*7+off); break;
+    case 'spark':                                  // crackle: occasional flicker
+      { const c=Math.sin(clock*5+off); const flick=(c>0.82)?1:0;
+        bright=(0.08+0.5*flick*(0.5+0.5*Math.sin(clock*60)))*A; } break;
+    case 'mana':                                   // steady glow
+      bright=(0.10+0.06*Math.sin(clock*1.8+off))*A; break;
+    case 'catalyst':                               // pulse (link drawn separately)
+      { const p=0.5+0.5*Math.sin(clock*3+off);
+        bright=(0.10+0.16*p)*A; sx=sy=0.05*A*p; } break;
+    case 'plate':                                  // slow metallic sheen (sweep handled in draw)
+      bright=0.04*A*Math.sin(clock*1.2+off); break;
+    case 'force':                                  // occasional glint
+      { const g=Math.sin(clock*2.4+off); bright=(g>0.9?0.4:0)*A; } break;
+    case 'focus':                                  // faint sparkle
+      bright=(0.06+0.14*Math.pow(Math.max(0,Math.sin(clock*6+off)),8))*A; break;
+    case 'swift':                                  // light shiver
+      sx=0.04*A*Math.sin(clock*8+off); break;
+  }
+  return {bright, sx, sy};
+}
+
+/* ============================================================================
+   8. RENDER — arena 2.5D, creature soft-body (the 4 layers), VFX
+   ========================================================================== */
+let t = 0;
+let shake = 0, hitstop = 0;
+const debris    = [];
+const particles = [];
+const dust      = [];
+const floaters  = [];
+const slashFX   = [];
+const bolts     = [];
+let lightFlash  = 0, lightCol = '#fff';
+
+for(let i=0;i<46;i++){
+  dust.push({ x:rnd()*innerWidth, y:rnd()*innerHeight*0.85,
+    z:0.3+rnd()*0.7, sp:6+rnd()*16, ph:rnd()*7 });
+}
+
+function creatureScreenX(f){ return f.homeX + f.face*f.advance + f.knock; }
+function depthScale(f){
+  const back = Math.max(0, f.knock * f.face);
+  return 1 - Math.min(0.20, back*0.0017);
+}
+
+function physStep(dt){
+  for(const f of fighters){
+    for(const p of f.px){
+      const ax = -SPRING_K*p.ox - SPRING_D*p.vx;
+      const ay = -SPRING_K*p.oy - SPRING_D*p.vy;
+      p.vx += ax*dt; p.vy += ay*dt; p.ox += p.vx*dt; p.oy += p.vy*dt;
+    }
+    const ka = -34*f.knock - 7.5*f.knockV;
+    f.knockV += ka*dt; f.knock += f.knockV*dt;
+    const a = actors.find(x=>x.f===f);
+    let want = 0;
+    if(a){
+      if(a.stage==='windup')  want = -0.12;
+      else if(a.stage==='release' && !a.move.ranged) want = 1.0;
+      else if(a.stage==='release') want = 0.15;
+    }
+    const other = (f===hero?enemy:hero);
+    if(other){
+      const reach = (Math.abs(other.homeX - f.homeX) - 3.6*PX);
+      f.advance += (want*reach - f.advance) * Math.min(1, 11*dt);
+    }
+    f.flash  = Math.max(0, f.flash  - dt*7);
+    f.squash = Math.max(0, f.squash - dt*5);
+    f.hpShown += (f.hp - f.hpShown) * Math.min(1, 9*dt);
+    if(f.chipDelay>0) f.chipDelay -= dt;
+    else f.hpChip += (f.hp - f.hpChip) * Math.min(1, 4*dt);
+  }
+  for(let i=debris.length-1;i>=0;i--){ const d=debris[i];
+    d.vy += 980*dt; d.x+=d.vx*dt; d.y+=d.vy*dt; d.life-=dt;
+    if(d.y>ground){ d.y=ground; d.vy*=-0.35; d.vx*=0.6; }
+    if(d.life<=0) debris.splice(i,1);
+  }
+  for(let i=particles.length-1;i>=0;i--){ const p=particles[i];
+    p.vy += (p.grav||0)*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt;
+    p.vx*=Math.pow(p.drag||0.02,dt); p.vy*=Math.pow(p.drag||0.02,dt);
+    if(p.life<=0) particles.splice(i,1);
+  }
+  for(const d of dust){ d.x += d.sp*dt*0.4; d.y -= d.sp*dt*0.12; if(d.x>W+5)d.x=-5; if(d.y<-5)d.y=H*0.85; }
+  for(let i=floaters.length-1;i>=0;i--){ const fl=floaters[i];
+    fl.t+=dt; fl.y -= (fl.vy||32)*dt; fl.vy=(fl.vy||32)*Math.pow(0.05,dt);
+    fl.pop = Math.max(0, (fl.pop||0)-dt*5);
+    if(fl.t>fl.life) floaters.splice(i,1);
+  }
+  for(let i=bolts.length-1;i>=0;i--){ bolts[i].t+=dt; if(bolts[i].t>=bolts[i].life) bolts.splice(i,1); }
+  shake *= Math.pow(0.0001, dt);
+  lightFlash = Math.max(0, lightFlash - dt*3.2);
+}
+
+function spark(x,y,n,col,spd){
+  for(let i=0;i<n;i++){ const a=rnd()*6.283;
+    particles.push({ x,y, vx:Math.cos(a)*spd*(0.4+rnd()), vy:Math.sin(a)*spd*(0.4+rnd())-40,
+      life:0.3+rnd()*0.35, col, sz:2+rnd()*3, grav:300, drag:0.02 }); }
+}
+function burst(x,y,n,cols,spd,grav,sz){
+  for(let i=0;i<n;i++){ const a=rnd()*6.283, s=spd*(0.3+rnd());
+    particles.push({ x,y, vx:Math.cos(a)*s, vy:Math.sin(a)*s-20,
+      life:0.4+rnd()*0.6, col:rPick(cols), sz:sz*(0.6+rnd()), grav:grav, drag:0.05 }); }
+}
+
+function meleeImpactFX(f, tgt, move){
+  const ix = creatureScreenX(tgt) - f.face*18, iy = ground - 3.0*PX*tgt.scale;
+  if(move.kind==='fist'){ spark(ix,iy,6,'#ffffff',180); }
+  else if(move.kind==='sword'){
+    slashFX.push({ x:ix, y:iy, dir:f.face, t:0, life:0.22 });
+    spark(ix,iy,10,'#dfe7ff',260);
+  }
+}
+function projectileImpactFX(p){
+  const ix=p.ex, iy=p.ey;
+  if(p.move.kind==='bow'){
+    spark(ix,iy,9,'#e8d9a0',240);
+    burst(ix,iy,6,['#caa15a','#8a6a30'],120,400,3);
+  } else if(p.school==='fire'){
+    burst(ix,iy,26,['#ff7a2a','#ffd24a','#ff3b1e','#9a2a10'],340,200,4);
+    lightFlash=0.9; lightCol=SCHOOL.fire.light; shake=Math.max(shake,SHAKE_CRIT);
+    triggerZoom(0.10);
+  } else if(p.school==='frost'){
+    burst(ix,iy,24,['#5ad6ff','#bff0ff','#3aa6ff','#dffaff'],280,120,4);
+    for(let i=0;i<8;i++){ const a=-1.2-rnd()*0.7;
+      particles.push({ x:ix,y:iy, vx:Math.cos(a)*(120+rnd()*120)*(rnd()<.5?-1:1),
+        vy:Math.sin(a)*(180+rnd()*160), life:0.5+rnd()*0.4, col:'#bff0ff', sz:2+rnd()*2, grav:500, drag:0.05 }); }
+    lightFlash=0.8; lightCol=SCHOOL.frost.light;
+  } else if(p.school==='spark'){
+    bolts.push({ bolt:p.bolt, t:0, life:0.22 });
+    burst(ix,iy,22,['#c79bff','#ffffff','#9b6bff','#e6d6ff'],300,40,3);
+    for(let i=0;i<10;i++){ const a=rnd()*6.283;
+      particles.push({ x:ix,y:iy, vx:Math.cos(a)*(160+rnd()*200), vy:Math.sin(a)*(160+rnd()*200)-30,
+        life:0.25+rnd()*0.25, col:'#ffffff', sz:1+rnd()*2, grav:0, drag:0.01 }); }
+    lightFlash=1.0; lightCol=SCHOOL.spark.light; shake=Math.max(shake,SHAKE_CRIT*0.8);
+    triggerZoom(0.12);
+  }
+}
+
+/* ---- shared creature renderer: APPLIES THE 4 LAYERS in NEW mode ----------
+   In OLD mode it renders flat (original colours, no glyph/behaviour/flare):
+   that is the "before" half of the demo. `inspectType` (NEW only) dims other
+   types so the hovered TYPE pops across the body.
+   ------------------------------------------------------------------------- */
+function drawCreaturePixels(f, sx, baseY, scaleMul, breathPhase, inspectType){
+  const s = depthScale(f) * f.scale * scaleMul;
+  const cell = PX*s;
+  const breath=1+0.03*Math.sin(t*2.6+breathPhase);
+  const sq=1 - f.squash*0.18, st=1 + f.squash*0.14;
+
+  // magic charge halo (kept from engine)
+  if(f.charge>0 && f.chargeSchool){
+    const sc=SCHOOL[f.chargeSchool];
+    const r=(14+f.charge*22)*f.scale;
+    const gg=ctx.createRadialGradient(sx, baseY-3*PX*s, 2, sx, baseY-3*PX*s, r);
+    gg.addColorStop(0, sc.col2); gg.addColorStop(0.5, sc.col); gg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.globalAlpha=0.6*f.charge; ctx.fillStyle=gg;
+    ctx.beginPath(); ctx.arc(sx, baseY-3*PX*s, r, 0, 7); ctx.fill(); ctx.globalAlpha=1;
+  }
+
+  // LAYER 3 helper: catalyst link lines to adjacent magic pixels (NEW only)
+  if(NEW_MODE){
+    for(let i=0;i<f.px.length;i++){
+      const c=f.px[i]; if(c.t!=='catalyst') continue;
+      const cx = sx + (c.gx*PX*sq + c.ox)*s;
+      const cy = baseY - (3.2*PX*s) + ((c.gy*PX)*breath*st + c.oy)*s;
+      const pulse=0.18+0.16*(0.5+0.5*Math.sin(t*3+i));
+      for(let j=0;j<f.px.length;j++){
+        const q=f.px[j]; if(j===i || !PIX[q.t].magic || q.t==='catalyst') continue;
+        if(Math.abs(c.gx-q.gx)>1 || Math.abs(c.gy-q.gy)>1) continue;
+        const qx = sx + (q.gx*PX*sq + q.ox)*s;
+        const qy = baseY - (3.2*PX*s) + ((q.gy*PX)*breath*st + q.oy)*s;
+        ctx.globalAlpha=pulse; ctx.strokeStyle=NEW_PAL.catalyst; ctx.lineWidth=Math.max(1,s*1.2);
+        ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(qx,qy); ctx.stroke();
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+
+  for(let i=0;i<f.px.length;i++){
+    const p=f.px[i];
+    let bx=0,by=0,brBeh=0;
+    if(NEW_MODE){
+      const bm=behaviorMod(p.t, t, i*1.7);
+      bx=bm.sx*PX; by=bm.sy*PX; brBeh=bm.bright;
+    }
+    const x = sx + (p.gx*PX*sq + p.ox + bx)*s;
+    const y = baseY - (3.2*PX*s) + ((p.gy*PX)*breath*st + p.oy + by)*s;
+
+    // LAYER 4: causal flare scale-pop
+    const fl = NEW_MODE ? (p.flare||0)*FLARE_INTENSITY : 0;
+    const popScale = 1 + fl*0.5;
+    const w = (PX*s + 0.6) * popScale;
+
+    // INSPECT dim (NEW only): non-hovered TYPES recede
+    let cellAlpha = 1;
+    if(NEW_MODE && inspectType && p.t!==inspectType) cellAlpha = INSPECT_DIM;
+
+    // base body colour
+    const base = colorOfType(p.t);
+    let col = base;
+    if(f.flash>0.15) col = '#ffffff';
+    else if(NEW_MODE){
+      // behaviour brightness + flare brightness
+      col = lighten(base, Math.min(0.95, brBeh + fl*0.9));
+    }
+
+    ctx.globalAlpha = cellAlpha;
+    ctx.fillStyle = col;
+    ctx.fillRect(x-w/2, y-w/2, w, w);
+    // top sheen
+    ctx.fillStyle='rgba(255,255,255,0.10)';
+    ctx.fillRect(x-w/2, y-w/2, w, Math.max(1,w*0.18));
+
+    // LAYER 3: plate metallic sheen sweep (a moving bright band)
+    if(NEW_MODE && p.t==='plate'){
+      const sweep = ((t*0.5 + i*0.13) % 1);
+      const band = Math.max(0, 1 - Math.abs(sweep-0.5)*5);
+      if(band>0){ ctx.globalAlpha=cellAlpha*0.35*band; ctx.fillStyle='#eef3fb';
+        ctx.fillRect(x-w/2, y-w/2, w*0.5, w); }
+    }
+
+    // LAYER 2: GLYPH (NEW only) — tinted for contrast, flares to near-white
+    if(NEW_MODE){
+      const meta = PIX[p.t];
+      let gcol = meta.tint;
+      let galpha = cellAlpha * (cell>GLYPH_MIN_CELL ? 0.92 : 1);
+      if(fl>0.25){ gcol = '#ffffff'; galpha = cellAlpha; }   // flaring glyph pops white
+      drawGlyph(meta.glyph, x, y, w, gcol, galpha);
+    }
+    ctx.globalAlpha = 1;
+
+    // flare emission ring on strongly-flaring pixels
+    if(NEW_MODE && fl>0.4){
+      ctx.globalAlpha = Math.min(0.7, fl*0.6)*cellAlpha;
+      ctx.strokeStyle = lighten(base, 0.5); ctx.lineWidth=Math.max(1,s*0.8);
+      ctx.strokeRect(x-w/2-2, y-w/2-2, w+4, w+4);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // status overlays
+  if(f.statuses.some(st2=>st2.key==='slow')){
+    ctx.globalAlpha=0.18; ctx.fillStyle='#5ad6ff';
+    ctx.fillRect(sx-30*s, baseY-3.4*PX*s-6, 60*s, 4.2*PX*s+6); ctx.globalAlpha=1;
+  }
+  if(f.statuses.some(st2=>st2.key==='shock')){
+    ctx.globalAlpha=0.13+0.1*Math.abs(Math.sin(t*22)); ctx.fillStyle='#c79bff';
+    ctx.fillRect(sx-30*s, baseY-3.4*PX*s-6, 60*s, 4.2*PX*s+6); ctx.globalAlpha=1;
+  }
+}
+
+// lighten a hex colour toward white by amount a (0..1)
+const _lc = {};
+function lighten(hex, a){
+  if(a<=0) return hex;
+  const key=hex+'|'+(a.toFixed(2));
+  if(_lc[key]) return _lc[key];
+  const n=parseInt(hex.slice(1),16);
+  let r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  r=Math.round(r+(255-r)*a); g=Math.round(g+(255-g)*a); b=Math.round(b+(255-b)*a);
+  const out='#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1);
+  _lc[key]=out; return out;
+}
+
+function drawArena(){
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#141b27'); g.addColorStop(.55,'#10161f'); g.addColorStop(1,'#080b11');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  const hg = ctx.createRadialGradient(W*0.5, ground, 10, W*0.5, ground, W*0.7);
+  hg.addColorStop(0,'rgba(60,90,140,0.18)'); hg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=hg; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='rgba(120,150,190,0.10)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,ground); ctx.lineTo(W,ground); ctx.stroke();
+  ctx.fillStyle='#161d2a';
+  ctx.beginPath();
+  ctx.moveTo(W*0.5-60, ground); ctx.lineTo(W*0.5+60, ground);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+  for(let i=1;i<8;i++){
+    const u=i/8, y=ground+(H-ground)*u*u;
+    ctx.strokeStyle=`rgba(70,100,150,${0.22*(1-u)})`; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+  }
+  const vp=W*0.5;
+  for(let i=-6;i<=6;i++){
+    if(i===0) continue;
+    const topX = vp + i*16, botX = vp + i*(W*0.5/3);
+    ctx.strokeStyle='rgba(70,100,150,0.10)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(topX,ground); ctx.lineTo(botX,H); ctx.stroke();
+  }
+  for(const d of dust){
+    ctx.globalAlpha=0.10+0.18*d.z;
+    ctx.fillStyle='#bcd0ee';
+    const sdz=1+d.z*2; ctx.fillRect(d.x, d.y, sdz, sdz);
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawShadow(f){
+  const s=depthScale(f)*f.scale, sx=creatureScreenX(f);
+  ctx.fillStyle='rgba(0,0,0,0.38)';
+  ctx.beginPath(); ctx.ellipse(sx, ground+3, 36*s, 9*s, 0,0,7); ctx.fill();
+}
+
+function drawCreature(f){
+  if(!f.alive) return;
+  const sx=creatureScreenX(f);
+  const lift=(1-depthScale(f))*120;
+  const baseY=ground-lift;
+  const inspectType = (hoverInfo && hoverInfo.fighter===f) ? hoverInfo.type : null;
+  drawCreaturePixels(f, sx, baseY, 1, (f.face>0?1.5:0), inspectType);
+}
+
+function drawProjectiles(){
+  for(const p of projectiles){
+    if(p.move.kind==='spark') continue;
+    const u=p.t/p.dur;
+    const x=p.sx+(p.ex-p.sx)*u;
+    const y=p.sy+(p.ey-p.sy)*u - Math.sin(u*Math.PI)*p.arc;
+    const ang=Math.atan2((p.ey-p.sy) - Math.cos(u*Math.PI)*p.arc*Math.PI, (p.ex-p.sx));
+    ctx.save(); ctx.translate(x,y); ctx.rotate(ang);
+    if(p.move.kind==='bow'){
+      ctx.strokeStyle='rgba(230,210,150,0.4)'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(-26,0); ctx.lineTo(0,0); ctx.stroke();
+      ctx.strokeStyle='#caa15a'; ctx.lineWidth=2.5;
+      ctx.beginPath(); ctx.moveTo(-14,0); ctx.lineTo(8,0); ctx.stroke();
+      ctx.fillStyle='#e8d9a0'; ctx.beginPath();
+      ctx.moveTo(8,0); ctx.lineTo(2,-3); ctx.lineTo(2,3); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle='#caa15a'; ctx.beginPath(); ctx.moveTo(-14,0); ctx.lineTo(-18,-3);
+      ctx.moveTo(-14,0); ctx.lineTo(-18,3); ctx.stroke();
+    } else {
+      const sc=SCHOOL[p.school];
+      const gg=ctx.createRadialGradient(0,0,1,0,0,16);
+      gg.addColorStop(0,sc.col2); gg.addColorStop(0.5,sc.col); gg.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(0,0,16,0,7); ctx.fill();
+      ctx.fillStyle=sc.col2; ctx.beginPath(); ctx.arc(0,0,4,0,7); ctx.fill();
+      if(rnd()<0.8) particles.push({ x, y, vx:(rnd()-.5)*40, vy:(rnd()-.5)*40,
+        life:0.3, col:sc.col, sz:2+rnd()*2, grav:p.school==='fire'?-120:60, drag:0.1 });
+      ctx.restore();
+      continue;
+    }
+    ctx.restore();
+  }
+}
+
+function drawBolts(){
+  for(const b of bolts){
+    const a = 1 - b.t/b.life;
+    const flick = 0.6+0.4*Math.abs(Math.sin(b.t*60));
+    ctx.globalAlpha = a*flick;
+    ctx.strokeStyle='rgba(199,155,255,0.5)'; ctx.lineWidth=7; ctx.lineJoin='round';
+    strokePath(b.bolt.main);
+    for(const fk of b.bolt.forks) strokePath(fk);
+    ctx.strokeStyle='#ffffff'; ctx.lineWidth=2.4;
+    strokePath(b.bolt.main);
+    ctx.strokeStyle='#e6d6ff'; ctx.lineWidth=1.4;
+    for(const fk of b.bolt.forks) strokePath(fk);
+    ctx.globalAlpha=1;
+  }
+}
+function strokePath(pts){
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
+}
+
+function drawSlashFX(rdt){
+  for(let i=slashFX.length-1;i>=0;i--){
+    const sFx=slashFX[i]; sFx.t+=rdt;
+    const u=sFx.t/sFx.life; if(u>=1){ slashFX.splice(i,1); continue; }
+    ctx.save(); ctx.translate(sFx.x, sFx.y);
+    ctx.globalAlpha=(1-u)*0.95; ctx.strokeStyle='#eaf0ff'; ctx.lineWidth=6-u*4;
+    ctx.beginPath();
+    const a0=(-1.1)*sFx.dir, a1=(1.1)*sFx.dir;
+    ctx.arc(0,0, 30, a0+u*0.6, a1+u*0.6, sFx.dir<0); ctx.stroke();
+    ctx.globalAlpha=(1-u)*0.6; ctx.strokeStyle='#9fb6e0'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(0,0,30,a0+u*0.6,a1+u*0.6, sFx.dir<0); ctx.stroke();
+    ctx.restore(); ctx.globalAlpha=1;
+  }
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=Math.min(1, p.life*3);
+    ctx.fillStyle=p.col;
+    ctx.fillRect(p.x-p.sz/2, p.y-p.sz/2, p.sz, p.sz);
+  }
+  ctx.globalAlpha=1;
+  for(const d of debris){
+    ctx.globalAlpha=Math.min(1,d.life*2);
+    ctx.fillStyle = (NEW_MODE && d.t) ? colorOfType(d.t) : d.c;
+    const s=d.sz||PX*0.8; ctx.fillRect(d.x-s/2, d.y-s/2, s, s);
+  }
+  ctx.globalAlpha=1;
+}
+
+/* ============================================================================
+   9. UI — HP bars, floaters, log, LEGEND, INSPECT, MODE label
+   ========================================================================== */
+const log = [];
+function pushLog(text, col){ log.push({text, col:col||'#dfe6f0'}); if(log.length>7) log.shift(); }
+
+function addFloater(f, text, col, big){
+  floaters.push({ x:creatureScreenX(f), y:ground-3.6*PX*f.scale-18, t:0, life: big?1.3:0.95,
+    text, col, big:!!big, vy: big?20:34, pop: big?1:0.4 });
+}
+
+function consumeEvents(){
+  while(events.length){
+    const e = events.shift();
+    if(e.kind==='telegraph'){ /* flare already triggered in startAction */ }
+    else if(e.kind==='cast'){
+      const sc = SCHOOL[e.school];
+      lightFlash=Math.max(lightFlash,0.5); lightCol=sc.light;
+      const x=creatureScreenX(e.source), y=ground-3.0*PX*e.source.scale;
+      burst(x,y,10,[sc.col,sc.col2],90,-20,3);
+    }
+    else if(e.kind==='resolve'){
+      const s=e.source, tg=e.target, m=e.move;
+      if(e.dodge){
+        addFloater(tg, rnd()<0.5?'УХИЛ':'ПРОМАХ', '#9aa6b4', false);
+        pushLog(`${tg.name} ${rnd()<0.5?'ухилився':'уник удару'}`, '#9aa6b4');
+        spark(creatureScreenX(tg), ground-3*PX*tg.scale, 4, '#7e8a99', 90);
+      } else {
+        if(e.crit){
+          addFloater(tg, e.damage+'', '#ffe24a', true);
+          triggerSlowmo(SLOWMO_CRIT, 0.55); triggerZoom(ZOOM_PUNCH);
+          shake=Math.max(shake,SHAKE_CRIT); hitstop=Math.max(hitstop,HITSTOP_HIT*2.2);
+        } else {
+          addFloater(tg, e.damage+'', e.shockAmp?'#e6d6ff':'#ffffff', false);
+          shake=Math.max(shake, SHAKE_BASE*Math.min(2, e.damage/14));
+          hitstop=Math.max(hitstop, HITSTOP_HIT*Math.min(2.2, 0.7+e.damage/26));
+        }
+        let line = `${s.name} ${m.label}`;
+        if(m.school) line += ` [${SCHOOL[m.school].name}]`;
+        line += ` — ${e.damage}`;
+        if(e.crit) line += ' (КРИТ!)';
+        if(e.shockAmp) line += ' ⚡(Шок!)';
+        if(e.status) line += `, накладено ${STATUS_DEF[e.status].uk}`;
+        pushLog(line, e.crit ? '#ffe24a' : (m.school?SCHOOL[m.school].col:'#dfe6f0'));
+        const dir = Math.sign(tg.homeX - s.homeX) || 1;
+        tg.knockV += dir*(e.crit?620:380)/Math.max(0.7,tg.scale*0.7);
+        for(const p of tg.px){ p.vx += dir*(180+e.damage*6)+(rnd()-.5)*120; p.vy+=(rnd()-.7)*150; }
+        if(e.damage>14){
+          const sc2=depthScale(tg)*tg.scale;
+          const cx=creatureScreenX(tg), cy=ground-2*PX*tg.scale;
+          for(let i=0;i<3;i++){ const pk=rPick(tg.px);
+            debris.push({ x:cx+pk.gx*PX*sc2, y:cy+pk.gy*PX*sc2, vx:dir*(120+rnd()*180),
+              vy:-(120+rnd()*220), c:colorOfType(pk.t), t:pk.t, life:0.8+rnd()*0.4, sz:PX*tg.scale*0.8 }); }
+        }
+      }
+    }
+    else if(e.kind==='statusTick'){
+      const def=STATUS_DEF[e.status];
+      addFloater(e.target, e.damage+'', def.col, false);
+      pushLog(`${e.target.name} ${e.status==='burn'?'горить':'мерзне'} — ${e.damage}`, def.col);
+      const x=creatureScreenX(e.target), y=ground-2.4*PX*e.target.scale;
+      if(e.status==='burn') burst(x,y,8,['#ff7a2a','#ffd24a'],80,-160,3);
+    }
+    else if(e.kind==='ko'){
+      pushLog(`K.O. — ${e.winner.name} переміг!`, '#ffd24a');
+      lightFlash=1; lightCol='#fff';
+    }
+  }
+}
+
+/* ---- LEGEND KEY (always visible, bottom-left) ----------------------------
+   Each type: swatch + glyph + name + one-word UA effect. In OLD mode it still
+   lists types but shows the flat colours and NO glyphs (driving the point home
+   that the OLD scheme has no per-pixel symbol language).
+   ------------------------------------------------------------------------- */
+function drawLegend(){
+  const pad=10, rowH=22, sw=18;
+  const rows=TYPE_ORDER.length;
+  const w=222, x=14, y0=H-14-rows*rowH-30;
+  ctx.fillStyle='rgba(8,12,20,0.66)';
+  ctx.fillRect(x-8, y0-26, w+8, rows*rowH+34);
+  ctx.strokeStyle='rgba(90,120,170,0.25)'; ctx.lineWidth=1;
+  ctx.strokeRect(x-8, y0-26, w+8, rows*rowH+34);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 12px system-ui'; ctx.fillStyle='#9fb4d6';
+  ctx.fillText(NEW_MODE? 'КЛЮЧ: піксель → здатність' : 'КЛЮЧ (старий): лише колір', x, y0-10);
+  for(let i=0;i<rows;i++){
+    const tkey=TYPE_ORDER[i], meta=PIX[tkey];
+    const ry=y0+i*rowH;
+    // swatch
+    ctx.fillStyle=colorOfType(tkey);
+    ctx.fillRect(x, ry, sw, sw);
+    ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=1; ctx.strokeRect(x,ry,sw,sw);
+    // glyph inside swatch (NEW only)
+    if(NEW_MODE) drawGlyph(meta.glyph, x+sw/2, ry+sw/2, sw, meta.tint, 0.95);
+    // text
+    ctx.font='12px system-ui'; ctx.textBaseline='middle';
+    ctx.fillStyle='#dfe7f2';
+    ctx.fillText(meta.name+' — '+meta.eff, x+sw+8, ry+sw/2+1);
+    ctx.textBaseline='alphabetic';
+  }
+}
+
+/* ---- INSPECT tooltip (hover a pixel) ---- */
+let hoverInfo = null;   // { fighter, type, sx, sy } in screen space (post-zoom)
+function drawInspectTooltip(){
+  if(!hoverInfo || !NEW_MODE) return;
+  const meta=PIX[hoverInfo.type];
+  const label=meta.name, eff='Ефект: '+meta.eff;
+  ctx.font='bold 14px system-ui';
+  const w=Math.max(ctx.measureText(label).width, ctx.measureText(eff).width)+54;
+  const h=52;
+  let x=hoverInfo.mx+16, y=hoverInfo.my-h-10;
+  if(x+w>W) x=hoverInfo.mx-w-16; if(y<4) y=hoverInfo.my+16;
+  ctx.fillStyle='rgba(10,14,22,0.92)'; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle=colorOfType(hoverInfo.type); ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+  // swatch + glyph
+  ctx.fillStyle=colorOfType(hoverInfo.type); ctx.fillRect(x+8,y+8,34,34);
+  drawGlyph(meta.glyph, x+8+17, y+8+17, 34, meta.tint, 1);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 14px system-ui'; ctx.fillStyle='#fff';
+  ctx.fillText(label, x+50, y+22);
+  ctx.font='12px system-ui'; ctx.fillStyle='#bcd0ee';
+  ctx.fillText(eff, x+50, y+40);
+}
+
+function drawHPBar(f){
+  const sx=creatureScreenX(f)*zoom + (1-zoom)*W/2 + camX;
+  const top=(ground-lift_(f)-3.4*PX*f.scale-46)*zoom + (1-zoom)*H/2 + camY;
+  const bw=120*(f.boss?1.25:1), bh=11, x=sx-bw/2, y=top;
+  ctx.font='bold 13px system-ui'; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle = f.accent;
+  ctx.fillText(f.name, x, y-6);
+  ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(x-2,y-2,bw+4,bh+4);
+  ctx.fillStyle='rgba(255,255,255,0.6)';
+  ctx.fillRect(x, y, bw*Math.max(0,f.hpChip)/f.maxHP, bh);
+  const frac=Math.max(0,f.hpShown)/f.maxHP;
+  const col = frac>0.5?'#56d364':frac>0.25?'#e3b341':'#e5534b';
+  ctx.fillStyle=col; ctx.fillRect(x, y, bw*frac, bh);
+  ctx.font='9px system-ui'; ctx.fillStyle='#0a0d12';
+  ctx.fillText(Math.ceil(Math.max(0,f.hpShown))+'', x+4, y+9);
+  let ix=x;
+  for(const st of f.statuses){
+    const def=STATUS_DEF[st.key];
+    const k=Math.max(0.2, st.dur/def.dur);
+    ctx.fillStyle=def.col; ctx.globalAlpha=0.85;
+    const sz=14*k+4;
+    ctx.fillRect(ix, y+bh+3, sz, sz);
+    ctx.globalAlpha=1; ctx.font=(sz*0.8|0)+'px system-ui'; ctx.fillStyle='#fff';
+    ctx.textAlign='center'; ctx.fillText(def.glyph, ix+sz/2, y+bh+3+sz*0.78);
+    ctx.textAlign='left';
+    ix += 22;
+  }
+}
+
+let camX=0, camY=0;
+function lift_(f){ return (1-depthScale(f))*120; }
+
+function drawFloaters(){
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(const fl of floaters){
+    const a=Math.min(1, (fl.life-fl.t)*3);
+    const x=fl.x*zoom + (1-zoom)*W/2 + camX;
+    const y=fl.y*zoom + (1-zoom)*H/2 + camY;
+    const pop=1+fl.pop*0.8;
+    const size=(fl.big?30:18)*pop;
+    ctx.globalAlpha=a;
+    ctx.font=`bold ${size}px system-ui`;
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.7)';
+    ctx.strokeText(fl.text, x, y);
+    ctx.fillStyle=fl.col; ctx.fillText(fl.text, x, y);
+  }
+  ctx.globalAlpha=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+}
+
+function drawLog(){
+  const w=330, x=W-w-14, lh=19, n=log.length, y0=H-14-n*lh;
+  ctx.fillStyle='rgba(8,12,20,0.55)';
+  ctx.fillRect(x-8, y0-22, w+8, n*lh+28);
+  ctx.fillStyle='rgba(160,180,210,0.5)';
+  ctx.font='bold 11px system-ui'; ctx.textAlign='left';
+  ctx.fillText('БОЙОВИЙ ЛОГ', x, y0-8);
+  ctx.font='12px system-ui';
+  for(let i=0;i<n;i++){
+    const e=log[i]; const fade=0.4+0.6*((i+1)/n);
+    ctx.globalAlpha=fade; ctx.fillStyle=e.col;
+    ctx.fillText(e.text, x, y0+i*lh+8);
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawATB(){
+  for(const f of fighters){
+    if(!f.alive) continue;
+    const sx=creatureScreenX(f)*zoom+(1-zoom)*W/2+camX;
+    const top=(ground-lift_(f)-3.4*PX*f.scale-46)*zoom+(1-zoom)*H/2+camY;
+    const bw=120*(f.boss?1.25:1), x=sx-bw/2, y=top+16;
+    ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(x,y,bw,4);
+    ctx.fillStyle='#7fc8ff'; ctx.fillRect(x,y,bw*f.atb,4);
+  }
+}
+
+function drawVignetteAndLight(){
+  if(lightFlash>0){
+    ctx.globalAlpha=lightFlash*0.5;
+    const g=ctx.createRadialGradient(W/2,ground-100,40,W/2,H/2,W*0.7);
+    g.addColorStop(0,lightCol); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1;
+  }
+  const v=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.35,W/2,H/2,Math.max(W,H)*0.72);
+  v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,0,0,0.55)');
+  ctx.fillStyle=v; ctx.fillRect(0,0,W,H);
+}
+
+/* ---- MODE label (clear on-screen current mode) ---- */
+function drawModeLabel(){
+  const txt = NEW_MODE ? 'Режим: НОВА МОВА' : 'Режим: СТАРИЙ';
+  const sub = NEW_MODE ? 'колір + гліф + поведінка + причинний спалах'
+                       : 'лише плаский колір — піксель не читається';
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 20px system-ui';
+  const w=Math.max(ctx.measureText(txt).width, ctx.measureText(sub).width)+34;
+  ctx.fillStyle = NEW_MODE? 'rgba(20,40,30,0.72)':'rgba(45,25,25,0.72)';
+  ctx.fillRect(W/2-w/2, 40, w, 50);
+  ctx.strokeStyle = NEW_MODE? '#2FB873':'#E0483F'; ctx.lineWidth=2;
+  ctx.strokeRect(W/2-w/2, 40, w, 50);
+  ctx.fillStyle = NEW_MODE? '#9be8c2':'#ffb0aa';
+  ctx.fillText(txt, W/2, 64);
+  ctx.font='11px system-ui'; ctx.fillStyle='#cfd6e0';
+  ctx.fillText(sub, W/2, 82);
+  ctx.textAlign='left';
+}
+
+/* ============================================================================
+   10. CAMERA / JUICE
+   ========================================================================== */
+let timeScale = 1, slowmoT = 0, slowmoTarget = 1;
+let zoom = 1, zoomPunch = 0;
+function triggerSlowmo(scale, dur){ slowmoTarget=scale; slowmoT=dur; }
+function triggerZoom(amount){ zoomPunch=Math.max(zoomPunch, amount); }
+function cameraStep(rdt){
+  if(slowmoT>0){ slowmoT-=rdt; timeScale += (slowmoTarget-timeScale)*Math.min(1,10*rdt); }
+  else timeScale += (1-timeScale)*Math.min(1,6*rdt);
+  zoomPunch *= Math.pow(0.0009, rdt);
+  const breathe = 1 + ZOOM_BREATH*Math.sin(t*1.3);
+  zoom += ((breathe+zoomPunch) - zoom) * Math.min(1, 8*rdt);
+}
+
+/* ============================================================================
+   11. SEQUENCER (live fight loop) + ROSTER STRIP
+   ========================================================================== */
+let mode = 'NEW';              // 'NEW' | 'OLD' — drives PALETTE + layers
+let NEW_MODE = true;
+let loopCount = 0, stageIdx = 0;
+let resultT = 0, resultText='', resultWinnerColor='#ffe24a';
+
+function curStageEntry(){ return ROSTER[STAGE_ORDER[stageIdx]]; }
+function reseedForStage(){ rng = mulberry32(SEED_BASE + loopCount*101 + stageIdx*13 + 7); }
+
+function buildStageFighters(){
+  hero  = makeFighter(ROSTER.hero);
+  enemy = makeFighter(curStageEntry());
+  // squeeze the live fight into the lower band so the roster strip sits on top
+  fighters = [hero, enemy];
+}
+
+function startFight(){
+  phase='fight'; winner=null;
+  reseedForStage(); buildStageFighters();
+  actors.length=0; projectiles.length=0; delayed.length=0;
+  particles.length=0; debris.length=0; floaters.length=0; bolts.length=0; slashFX.length=0;
+  log.length=0;
+  pushLog(`Бій ${stageIdx+1}/${STAGE_ORDER.length}: ${hero.name} проти ${enemy.name}`, '#9fb0c8');
+  hero.atb=0.12; enemy.atb=0.0;
+}
+function startResult(){
+  phase='result'; resultT=RESULT_DUR;
+  const heroWon = winner===hero;
+  resultText = heroWon ? `${hero.name} переміг!` : `${enemy.name} переміг!`;
+  resultWinnerColor = heroWon ? '#7fd0ff' : enemy.accent;
+}
+function advanceStage(){
+  stageIdx++;
+  if(stageIdx>=STAGE_ORDER.length){ stageIdx=0; loopCount++; }
+  startFight();
+}
+
+// static idle "puppets" for the roster strip (own px state, never fight)
+let rosterPuppets = [];
+function buildRosterPuppets(){
+  rosterPuppets = ROSTER_ORDER.map(id=>{
+    const f = makeFighter(ROSTER[id]);
+    f.face = 1; f.homeX = 0; f.advance=0; f.knock=0;
+    return f;
+  });
+}
+
+// cycle which move each roster puppet "demonstrates" (flares) so the director
+// sees the causal mapping at a glance even on the static strip
+let rosterDemoT = 0, rosterDemoIdx = 0;
+function stepRosterDemo(rdt){
+  rosterDemoT += rdt;
+  if(rosterDemoT>1.1){
+    rosterDemoT=0; rosterDemoIdx++;
+    for(const f of rosterPuppets){
+      const k = f.moveset[rosterDemoIdx % f.moveset.length];
+      flareMovePixelsPuppet(f, k);
+    }
+  }
+}
+function flareMovePixelsPuppet(f, moveKey){
+  const ids = pixelsForMove(f.px, moveKey, f.face);
+  for(const i of ids){ f.px[i].flareTarget = 1.0; }
+}
+
+// integrate puppet springs + flare independently of fighters
+function stepPuppets(rdt){
+  const dt=rdt;
+  for(const f of rosterPuppets){
+    for(const p of f.px){
+      const ax = -SPRING_K*p.ox - SPRING_D*p.vx;
+      const ay = -SPRING_K*p.oy - SPRING_D*p.vy;
+      p.vx += ax*dt; p.vy += ay*dt; p.ox += p.vx*dt; p.oy += p.vy*dt;
+      const tgt=p.flareTarget||0;
+      if(tgt>p.flare) p.flare += (tgt-p.flare)*Math.min(1, FLARE_RISE*dt);
+      p.flare = Math.max(0, p.flare - FLARE_FALL*dt);
+      p.flareTarget=0;
+    }
+  }
+}
+
+function drawRosterStrip(){
+  // top band: all five idle creatures, large, labelled. Reuses drawCreaturePixels
+  // by temporarily redirecting `ground`-relative draw via explicit baseY.
+  const n=rosterPuppets.length;
+  const bandY = H*0.20;                  // baseline for the strip
+  const slotW = W/n;
+  ctx.textAlign='center';
+  // panel backdrop
+  ctx.fillStyle='rgba(8,12,20,0.40)';
+  ctx.fillRect(0, 0, W, H*FIGHT_REGION_TOP*0.5);
+  for(let i=0;i<n;i++){
+    const f=rosterPuppets[i];
+    const cx = slotW*(i+0.5);
+    const baseY = bandY + 28;
+    const inspectType = (hoverInfo && hoverInfo.fighter===f) ? hoverInfo.type : null;
+    // render via the shared 4-layer routine; ROSTER_SCALE makes glyphs legible
+    drawCreaturePixelsAt(f, cx, baseY, ROSTER_SCALE/f.scale, (i*1.3), inspectType);
+    // name + archetype
+    ctx.fillStyle=f.accent; ctx.font='bold 15px system-ui'; ctx.textBaseline='alphabetic';
+    ctx.fillText(f.name, cx, baseY+34);
+    ctx.fillStyle='#aeb9c8'; ctx.font='12px system-ui';
+    ctx.fillText(f.arch, cx, baseY+50);
+    // granted-move icons row (the capabilities these pixels unlock)
+    const icons=f.moveset.map(k=>MOVES[k].icon);
+    ctx.font='16px system-ui';
+    const gap=24, tw=(icons.length-1)*gap; let ix=cx-tw/2;
+    for(const ic of icons){ ctx.fillText(ic, ix, baseY+72); ix+=gap; }
+  }
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  // strip title
+  ctx.font='bold 12px system-ui'; ctx.fillStyle='#9fb4d6';
+  ctx.fillText('РОСТЕР — однакові білди, обидва режими (наведи на піксель)', 16, 24);
+}
+
+// a thin wrapper so the roster strip can place puppets at arbitrary screen pos
+// without depending on the live-fight `ground`. We momentarily borrow the
+// drawCreaturePixels math but with a fixed baseY (no knockback/advance).
+function drawCreaturePixelsAt(f, cx, baseY, scaleMul, phase, inspectType){
+  const savedAdvance=f.advance, savedKnock=f.knock;
+  f.advance=0; f.knock=0;
+  // emulate creatureScreenX(f)===cx by setting homeX
+  const savedHome=f.homeX; f.homeX=cx;
+  drawCreaturePixels(f, cx, baseY, scaleMul, phase, inspectType);
+  f.advance=savedAdvance; f.knock=savedKnock; f.homeX=savedHome;
+}
+
+/* ============================================================================
+   12. MAIN LOOP + INPUT
+   ========================================================================== */
+function setMode(m){
+  mode=m; NEW_MODE = (m==='NEW');
+  PALETTE = NEW_MODE ? NEW_PAL : OLD_PAL;
+  const btn=document.getElementById('toggle');
+  if(btn) btn.textContent = NEW_MODE ? 'Режим: НОВА МОВА  ⟲' : 'Режим: СТАРИЙ  ⟲';
+}
+function toggleMode(){ setMode(NEW_MODE ? 'OLD' : 'NEW'); }
+
+if(typeof document!=='undefined' && document.getElementById('toggle')){
+  document.getElementById('toggle').addEventListener('click', toggleMode);
+}
+addEventListener('keydown', e=>{
+  if(e.code==='Tab' || e.code==='Space'){ e.preventDefault(); toggleMode(); }
+});
+
+// --- mouse inspect: hit-test pixels of both fighters AND roster puppets ----
+let mouseX=-1, mouseY=-1;
+addEventListener('mousemove', e=>{ mouseX=e.clientX; mouseY=e.clientY; });
+addEventListener('mouseleave', ()=>{ mouseX=-1; mouseY=-1; });
+
+function updateHover(){
+  hoverInfo=null;
+  if(!NEW_MODE || mouseX<0) return;
+  // test roster puppets first (they're on top, in screen space, no zoom)
+  for(const f of rosterPuppets){
+    const hit=hitTestPixels(f, f._lastCx, f._lastBaseY, f._lastScaleMul, false);
+    if(hit){ hoverInfo={fighter:f, type:hit, mx:mouseX, my:mouseY}; return; }
+  }
+  // then live fighters (rendered under camera zoom transform)
+  for(const f of fighters){
+    if(!f.alive) continue;
+    const sx=creatureScreenX(f);
+    const baseY=ground-lift_(f);
+    const hit=hitTestPixels(f, sx, baseY, 1, true);
+    if(hit){ hoverInfo={fighter:f, type:hit, mx:mouseX, my:mouseY}; return; }
+  }
+}
+// returns the pixel TYPE under the mouse, or null. zoomed=true applies camera xf
+function hitTestPixels(f, sx, baseY, scaleMul, zoomed){
+  const s = depthScale(f)*f.scale*scaleMul;
+  const w = PX*s + 0.6;
+  const breath=1+0.03*Math.sin(t*2.6);
+  for(const p of f.px){
+    let x = sx + (p.gx*PX + p.ox)*s;
+    let y = baseY - (3.2*PX*s) + ((p.gy*PX)*breath + p.oy)*s;
+    if(zoomed){ x = x*zoom+(1-zoom)*W/2+camX; y = y*zoom+(1-zoom)*H/2+camY; }
+    const hw=(zoomed? w*zoom : w)/2 + 2;
+    if(mouseX>=x-hw && mouseX<=x+hw && mouseY>=y-hw && mouseY<=y+hw) return p.t;
+  }
+  return null;
+}
+
+// remember roster puppet screen placement for hit-testing
+function recordPuppetPlacement(){
+  const n=rosterPuppets.length, slotW=W/n, bandY=H*0.20;
+  for(let i=0;i<n;i++){
+    const f=rosterPuppets[i];
+    f._lastCx = slotW*(i+0.5);
+    f._lastBaseY = bandY+28;
+    f._lastScaleMul = ROSTER_SCALE/f.scale;
+  }
+}
+
+function drawResultBanner(){
+  ctx.save();
+  ctx.globalAlpha=0.92;
+  ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(0,ground-150,W,90);
+  ctx.textAlign='center';
+  ctx.font='bold 42px system-ui'; ctx.fillStyle='#ffe24a';
+  ctx.fillText('K.O.', W/2, ground-110);
+  ctx.font='bold 22px system-ui'; ctx.fillStyle=resultWinnerColor;
+  ctx.fillText(resultText, W/2, ground-78);
+  ctx.restore(); ctx.textAlign='left';
+}
+
+buildRosterPuppets();
+startFight();
+
+function frame(ts){
+  const rawDt = Math.min(0.05, (frame._p?ts-frame._p:16)/1000); frame._p=ts;
+  t += rawDt;
+
+  cameraStep(rawDt);
+  let simDt = rawDt * timeScale;
+  if(hitstop>0){ hitstop -= rawDt; simDt = 0; }
+
+  if(phase==='fight'){
+    if(simDt>0){ stepDelayed(simDt); simStep(simDt); stepFlare(simDt); }
+    consumeEvents();
+  } else if(phase==='result'){
+    consumeEvents();
+    if(simDt>0) stepFlare(simDt);
+    resultT -= rawDt;
+    if(resultT<=0) advanceStage();
+  }
+
+  physStep((phase==='fight' && hitstop>0) ? 0 : simDt);
+  stepRosterDemo(rawDt);
+  stepPuppets(rawDt);
+  recordPuppetPlacement();
+  updateHover();
+
+  // ---- DRAW ----
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  const shx=(rnd()-.5)*shake, shy=(rnd()-.5)*shake;
+  camX=shx; camY=shy;
+  drawArena();
+
+  // ROSTER STRIP (top, screen-space, no camera zoom)
+  drawRosterStrip();
+
+  // LIVE FIGHT (lower band, under camera zoom)
+  ctx.save();
+  ctx.translate(W/2+shx, H/2+shy);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-W/2, -H/2);
+  for(const f of fighters) drawShadow(f);
+  const order=[...fighters].sort((a,b)=>depthScale(a)-depthScale(b));
+  for(const f of order) drawCreature(f);
+  drawProjectiles();
+  drawBolts();
+  drawSlashFX(rawDt);
+  drawParticles();
+  ctx.restore();
+
+  drawVignetteAndLight();
+
+  for(const f of fighters){ if(f.alive) drawHPBar(f); }
+  drawATB();
+  drawFloaters();
+  drawLog();
+  drawLegend();
+  drawModeLabel();
+  if(phase==='result') drawResultBanner();
+  drawInspectTooltip();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
