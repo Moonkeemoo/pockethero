@@ -45,15 +45,15 @@ function makeStorage(): StorageLike & { data: Record<string, string> } {
 // stageCount
 // ---------------------------------------------------------------------------
 describe('stageCount', () => {
-  it('level 1 has 5 stages', () => {
-    expect(stageCount(1)).toBe(5);
+  it('level 1 has 20 stages', () => {
+    expect(stageCount(1)).toBe(20);
   });
-  it('level 2 has 10 stages', () => {
-    expect(stageCount(2)).toBe(10);
+  it('level 2 has 20 stages', () => {
+    expect(stageCount(2)).toBe(20);
   });
-  it('level 3+ also has 10 stages', () => {
-    expect(stageCount(3)).toBe(10);
-    expect(stageCount(10)).toBe(10);
+  it('level 3+ also has 20 stages', () => {
+    expect(stageCount(3)).toBe(20);
+    expect(stageCount(10)).toBe(20);
   });
 });
 
@@ -61,32 +61,33 @@ describe('stageCount', () => {
 // stageTier
 // ---------------------------------------------------------------------------
 describe('stageTier', () => {
-  it('last stage of level 1 (stage 4) is boss', () => {
-    expect(stageTier(1, 4)).toBe('boss');
+  it('stage 19 is boss (last stage in 20-stage run)', () => {
+    expect(stageTier(1, 19)).toBe('boss');
+    expect(stageTier(2, 19)).toBe('boss');
   });
-  it('last stage of level 2 (stage 9) is boss', () => {
-    expect(stageTier(2, 9)).toBe('boss');
+  it('stages 5, 10, 14 are elite (level-independent)', () => {
+    expect(stageTier(1, 5)).toBe('elite');
+    expect(stageTier(1, 10)).toBe('elite');
+    expect(stageTier(1, 14)).toBe('elite');
+    expect(stageTier(2, 5)).toBe('elite');
+    expect(stageTier(2, 10)).toBe('elite');
+    expect(stageTier(2, 14)).toBe('elite');
   });
-  it('L1 stage 2 is elite', () => {
-    expect(stageTier(1, 2)).toBe('elite');
-  });
-  it('L1 stages 0, 1, 3 are minor', () => {
+  it('stages 0, 1, 2, 3, 4 are minor', () => {
     expect(stageTier(1, 0)).toBe('minor');
     expect(stageTier(1, 1)).toBe('minor');
+    expect(stageTier(1, 2)).toBe('minor');
     expect(stageTier(1, 3)).toBe('minor');
+    expect(stageTier(1, 4)).toBe('minor');
   });
-  it('L2 stages 3 and 6 are elite', () => {
-    expect(stageTier(2, 3)).toBe('elite');
-    expect(stageTier(2, 6)).toBe('elite');
-  });
-  it('L2 non-elite non-boss stages are minor', () => {
-    expect(stageTier(2, 0)).toBe('minor');
-    expect(stageTier(2, 1)).toBe('minor');
-    expect(stageTier(2, 2)).toBe('minor');
-    expect(stageTier(2, 4)).toBe('minor');
-    expect(stageTier(2, 5)).toBe('minor');
+  it('non-elite non-boss stages (e.g. 6, 7, 8, 9, 11, 15) are minor', () => {
+    expect(stageTier(2, 6)).toBe('minor');
     expect(stageTier(2, 7)).toBe('minor');
     expect(stageTier(2, 8)).toBe('minor');
+    expect(stageTier(2, 9)).toBe('minor');
+    expect(stageTier(2, 11)).toBe('minor');
+    expect(stageTier(2, 15)).toBe('minor');
+    expect(stageTier(2, 18)).toBe('minor');
   });
 });
 
@@ -149,26 +150,27 @@ describe('genEnemy', () => {
     }
   });
 
-  it('pixel count grows with level', () => {
-    const lowLevel = genEnemy(1, 0);
-    const highLevel = genEnemy(3, 0);
+  it('pixel count grows with level (compare mid-run stage where levelMul clearly separates)', () => {
+    // stage 8: level 1 → ~7 pixels, level 3 → ~16 pixels (levelMul 1 vs 2.2)
+    const lowLevel = genEnemy(1, 8);
+    const highLevel = genEnemy(3, 8);
     expect(highLevel.build.length).toBeGreaterThan(lowLevel.build.length);
   });
 
-  it('pixel count grows with stage', () => {
+  it('pixel count grows with stage (compare last stage 19 vs stage 0 at same level)', () => {
     const early = genEnemy(2, 0);
-    const late = genEnemy(2, 8);
+    const late = genEnemy(2, 19); // stage 19 = boss, large ramp
     expect(late.build.length).toBeGreaterThan(early.build.length);
   });
 
   it('boss has boss:true and scale 1.6', () => {
-    const boss1 = genEnemy(1, 4); // last stage of L1
+    const boss1 = genEnemy(1, 19); // stage 19 = boss in 20-stage run
     expect(boss1.boss).toBe(true);
     expect(boss1.scale).toBe(1.6);
   });
 
   it('elite has scale 1.15', () => {
-    const elite = genEnemy(1, 2);
+    const elite = genEnemy(1, 5); // stage 5 is elite
     expect(elite.scale).toBe(1.15);
     expect(elite.boss).toBe(false);
   });
@@ -180,9 +182,9 @@ describe('genEnemy', () => {
   });
 
   it('boss pixel count is larger than minor at same level/stage-equiv', () => {
-    // Compare the boss (last stage) to the first minor stage of same level
+    // Compare the boss (stage 19) to the first minor stage of same level
     const minor = genEnemy(1, 0);
-    const boss = genEnemy(1, 4);
+    const boss = genEnemy(1, 19); // stage 19 = boss
     expect(boss.build.length).toBeGreaterThan(minor.build.length);
   });
 });
@@ -193,41 +195,61 @@ describe('genEnemy', () => {
 describe('stageReward', () => {
   it('minor reward is baseline', () => {
     const r = stageReward(1, 0);
-    // tier=minor (mul=1), xp = 15+1*5+0*3=20, coins=8+1*3+0*2=11
-    expect(r.xp).toBe(20);
-    expect(r.coins).toBe(11);
+    // tier=minor (mul=1), xp = 12+1*4+0*2=16, coins=round(6+1*3+0*1.5)=9
+    expect(r.xp).toBe(16);
+    expect(r.coins).toBe(9);
   });
 
   it('elite reward is 2x minor', () => {
     const minor = stageReward(1, 1); // minor stage 1
-    const elite = stageReward(1, 2); // elite stage 2
-    // minor: xp=15+5+3=23, elite: xp=(15+5+6)*2=52
+    const elite = stageReward(1, 5); // stage 5 is elite
+    // minor stage1: xp=18, elite stage5: xp=52
     expect(elite.xp).toBeGreaterThan(minor.xp);
     expect(elite.coins).toBeGreaterThan(minor.coins);
   });
 
   it('boss reward is 4x base', () => {
-    const boss = stageReward(1, 4);
-    // xp base = 15+5+12=32, *4 = 128
-    expect(boss.xp).toBe(128);
-    // coins base = 8+3+8=19, *4 = 76
-    expect(boss.coins).toBe(76);
+    const boss = stageReward(1, 19); // stage 19 = boss
+    // xp base = 12+4+38=54, *4 = 216
+    expect(boss.xp).toBe(216);
+    // coins base = round(6+3+28.5)=round(37.5)*4 → round(37.5*4)=150
+    expect(boss.coins).toBe(150);
   });
 
   it('L1 stage 0 grants cube "force"', () => {
     expect(stageReward(1, 0).cube).toBe('force');
   });
-  it('L1 stage 1 grants cube "plate"', () => {
-    expect(stageReward(1, 1).cube).toBe('plate');
+  it('L1 stage 1 grants cube "vital"', () => {
+    expect(stageReward(1, 1).cube).toBe('vital');
   });
-  it('L1 stage 2 grants cube "swift"', () => {
-    expect(stageReward(1, 2).cube).toBe('swift');
+  it('L1 stage 2 grants cube "plate"', () => {
+    expect(stageReward(1, 2).cube).toBe('plate');
   });
-  it('L1 stage 3 grants cube "focus"', () => {
-    expect(stageReward(1, 3).cube).toBe('focus');
+  it('L1 stage 3 grants cube "force"', () => {
+    expect(stageReward(1, 3).cube).toBe('force');
   });
-  it('L1 stage 4 grants cube "ember"', () => {
-    expect(stageReward(1, 4).cube).toBe('ember');
+  it('L1 stage 4 grants cube "swift"', () => {
+    expect(stageReward(1, 4).cube).toBe('swift');
+  });
+  it('L1 stage 5 grants cube "focus"', () => {
+    expect(stageReward(1, 5).cube).toBe('focus');
+  });
+  it('L1 stage 6 grants cube "vital"', () => {
+    expect(stageReward(1, 6).cube).toBe('vital');
+  });
+  it('L1 stage 7 grants cube "force"', () => {
+    expect(stageReward(1, 7).cube).toBe('force');
+  });
+  it('L1 stage 8 grants cube "plate"', () => {
+    expect(stageReward(1, 8).cube).toBe('plate');
+  });
+  it('L1 stage 9 grants cube "ember"', () => {
+    expect(stageReward(1, 9).cube).toBe('ember');
+  });
+  it('L1 stage 10+ grants no cube', () => {
+    for (let s = 10; s < 20; s++) {
+      expect(stageReward(1, s).cube).toBeUndefined();
+    }
   });
   it('L2 grants no onboarding cube', () => {
     for (let s = 0; s < 10; s++) {
@@ -331,13 +353,12 @@ describe('openChest', () => {
     expect(s.coins).toBe(CHEST_COST - 1); // unchanged
   });
 
-  it('succeeds when coins >= CHEST_COST', () => {
+  it('succeeds when coins >= CHEST_COST and grants exactly 1 cube', () => {
     const s = defaultState();
     s.coins = CHEST_COST;
     const result = openChest(s, mulberry32(42));
     expect(result.ok).toBe(true);
-    expect(result.cubes.length).toBeGreaterThanOrEqual(1);
-    expect(result.cubes.length).toBeLessThanOrEqual(3);
+    expect(result.cubes.length).toBe(1);
     expect(s.coins).toBe(0);
   });
 
@@ -400,7 +421,7 @@ describe('load — old save tolerance', () => {
   it('preserves existing coins if present in a current-version save', () => {
     const storage = makeStorage();
     storage.setItem('pockethero.save', JSON.stringify({
-      __v: 3, // current save version — pre-version saves reset to default
+      __v: 4, // current save version (SAVE_VERSION = 4)
       level: 2, xp: 0, essence: 0,
       inventory: {}, heroBuild: [{ gx: 0, gy: 0, type: 'core' }],
       coins: 75, campaign: { level: 2, stage: 3 },
