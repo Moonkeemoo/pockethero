@@ -384,17 +384,20 @@ if (opts.rewardEvents && opts.rewardEvents.length > 0) {
   const parts: string[] = [];
   let totalXP = 0, totalCoins = 0, levelUps = 0;
   const cubes: string[] = [];
+  const infoTexts: string[] = [];
   for (const ev of opts.rewardEvents) {
     if (ev.kind === 'xp')      totalXP    += ev.n;
     if (ev.kind === 'coins')   totalCoins += ev.n;
     if (ev.kind === 'levelUp') levelUps    = ev.level;
     if (ev.kind === 'cube')    cubes.push(ev.cube);
     if (ev.kind === 'loot')    cubes.push(...ev.cubes);
+    if (ev.kind === 'info')    infoTexts.push(ev.text);
   }
   if (totalXP > 0)    parts.push(`+${totalXP} XP`);
   if (totalCoins > 0) parts.push(`+${totalCoins} монет`);
   if (levelUps > 0)   parts.push(`Рівень ${levelUps}!`);
   if (cubes.length > 0) parts.push(`+${cubes.length} кубик${cubes.length > 1 ? 'ів' : ''}`);
+  for (const info of infoTexts) parts.push(info);
   if (parts.length > 0) {
     toastText  = parts.join(' · ');
     toastTimer = TOAST_DUR;

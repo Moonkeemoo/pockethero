@@ -1,34 +1,52 @@
-// app/main.ts — screen manager. Owns the SaveState; coordinates builder ↔ fight.
+// app/main.ts — lobby-centric screen manager.
+// Boot → Lobby. Lobby routes to battle / builder / chest. All share one persisted SaveState.
+import { startLobby } from '../src/render/lobby-view';
 import { startBuilder } from '../src/render/builder-view';
-import { startGauntlet } from '../src/render/gauntlet-fight';
+import { startCampaignBattle } from '../src/render/gauntlet-fight';
 import * as meta from '../src/game/meta';
-import type { RewardEvent } from '../src/game/meta';
 import type { Build } from '../src/index';
+import type { RewardEvent } from '../src/game/meta';
 
+const state = meta.load();
 let stop: (() => void) | null = null;
-let state = meta.load();
 
-function showBuilder(events?: RewardEvent[]): void {
-  stop?.(); stop = null;
-  stop = startBuilder({ state, onFight: (b: Build) => onFight(b), rewardEvents: events });
-}
-
-function onFight(build: Build): void {
-  state.heroBuild = build;
-  meta.save(state);
-  showFight(build);
-}
-
-function showFight(build: Build): void {
-  stop?.(); stop = null;
-  stop = startGauntlet({
-    heroBuild: build,
-    onExit: (r: { won: boolean; stagesCleared: number }) => {
-      const { events } = meta.addFightReward(state, r);
+function showLobby(events?: RewardEvent[]): void {
+  stop?.(); stop = startLobby({
+    state,
+    rewardEvents: events,
+    onBattle:  () => showBattle(),
+    onBuilder: () => showBuilder(),
+    onChest:   () => {
+      const r = meta.openChest(state);
       meta.save(state);
-      showBuilder(events);
+      if (r.ok) {
+        showLobby(r.events);
+      } else {
+        showLobby([{ kind: 'info', text: 'Недостатньо монет' }]);
+      }
     },
   });
 }
 
-showBuilder();
+function showBuilder(): void {
+  stop?.(); stop = startBuilder({
+    state,
+    onFight: (b: Build) => {
+      state.heroBuild = b;
+      meta.save(state);
+      showLobby();
+    },
+  });
+}
+
+function showBattle(): void {
+  stop?.(); stop = startCampaignBattle({
+    state,
+    onExit: (result) => {
+      meta.save(state);
+      showLobby(result.rewards);
+    },
+  });
+}
+
+showLobby();

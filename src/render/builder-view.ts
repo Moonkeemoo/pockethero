@@ -1451,7 +1451,7 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     ctx.fillStyle = '#2a1d14'; ctx.fillRect(bx, by, bw, bh);
     ctx.strokeStyle = '#a05a32'; ctx.lineWidth = 1.5; ctx.strokeRect(bx, by, bw, bh);
     ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#ffa060'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('У бій! →', bx + bw / 2, by + bh / 2);
+    ctx.fillText('← Лоббі', bx + bw / 2, by + bh / 2);
     ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   }
 

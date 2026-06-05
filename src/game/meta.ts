@@ -38,7 +38,8 @@ export type RewardEvent =
   | { kind: 'levelUp'; level: number }
   | { kind: 'loot'; cubes: string[] }
   | { kind: 'coins'; n: number }
-  | { kind: 'cube'; cube: string };
+  | { kind: 'cube'; cube: string }
+  | { kind: 'info'; text: string };
 
 // ---------------------------------------------------------------------------
 // Reward constants (tunable)
