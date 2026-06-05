@@ -1,0 +1,2393 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>PocketHero — HERO-BUILDER + META-DEPTH (Білдер + Синергії)</title>
+<style>
+  html,body{margin:0;height:100%;background:#070a0f;overflow:hidden;
+            font-family:"Segoe UI",system-ui,sans-serif;color:#cfd6e0}
+  #c{display:block;width:100%;height:100%;image-rendering:pixelated;cursor:crosshair}
+  #tag{position:fixed;left:10px;top:8px;color:#cfd6e0;font-size:12px;opacity:.7;
+       background:#0008;padding:4px 8px;border-radius:6px;pointer-events:none;letter-spacing:.3px}
+  /* top-right action buttons */
+  #ui{position:fixed;right:14px;top:10px;z-index:5;display:flex;gap:8px}
+  .btn{background:#16203a;color:#dfe8ff;border:1px solid #38507e;border-radius:8px;
+       padding:9px 14px;font:bold 13px system-ui;cursor:pointer;letter-spacing:.3px;
+       box-shadow:0 2px 8px #0007}
+  .btn:hover{background:#1d2c4f;border-color:#5a7bc0}
+  .btn.go{background:#2a1d14;border-color:#a05a32}
+  .btn.go:hover{background:#3a2716;border-color:#e08a5a}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="tag">PocketHero · HERO-BUILDER + META-DEPTH · синергії суміжності + форми</div>
+<div id="ui">
+  <button id="btnAll"  class="btn"    title="показати всі звʼязки">всі звʼязки: ВИМК</button>
+  <button id="btnGo"   class="btn go" title="до бою">В бій →</button>
+</div>
+<script>
+"use strict";
+/* ============================================================================
+   PocketHero — HERO-BUILDER + META-DEPTH prototype
+   ONE file, vanilla JS + Canvas2D. Deterministic (Mulberry32 seed).
+   SIM / RENDER / DETECTORS kept separate & data-driven (ports to PixiJS).
+
+   GOAL (director): deepen hero-building with two new meta systems and make
+   effect ACTIVATION + POSITIVE/NEGATIVE statuses legible — at scale.
+     A) Interactive BUILDER grid (build a hero from a Core outward).
+     B) Two meta-depth systems, data-driven + named:
+          ADJACENCY synergies  (effect from HOW cubes touch)
+          SHAPE recipes        (effect from the SHAPE built)
+        => detectSynergies(build) / detectShapes(build) -> TRAITS, folded
+           into deriveStats so they actually change the hero.
+     C) BUILDER visualization (deep detail): bond lines (contextual/all toggle),
+        shape highlights w/ completion flash, traits panel, stats+moveset,
+        LOD via zoom (glyphs/bonds at builder zoom -> color blocks at combat).
+     D) COMBAT view (clean, LOD-simplified): built hero fights roster foes.
+          - effect ACTIVATION popups when a trait procs (icon+name+VFX)
+          - buff/debuff TRAY separate from HP bar: POSITIVE green-framed,
+            NEGATIVE red-framed, chip = icon + stack + countdown shrink.
+
+   Reuses pixel-legibility.html wholesale: pixel TYPES, NEW semantic palette,
+   hand-drawn drawGlyph(), behavior-as-function, causal flare, deriveStats /
+   deriveMoveset, soft-body creature render, ATB sim + event bus + 2.5D juice.
+
+   SECTIONS:
+     0. TUNABLE CONSTANTS (director knobs incl. meta knobs)
+     1. SEEDED RNG
+     2. PIXEL TYPES + PALETTE + EFFECT words
+     3. MOVESET DATA + SCHOOLS + STATUSES
+     4. META: synergy + shape DEFS, detectors, deriveStats (folds traits)
+     5. ROSTER (preset builds) + big preset
+     6. TRAIT ICON DRAWERS (small unique symbols)
+     7. SIM — combatants, ATB loop, resolution, EVENT BUS, trait procs
+     8. LEGIBILITY CORE — pixelsForMove / glyph drawers / behaviour / flare
+     9. RENDER — creature soft-body (LOD-aware), VFX
+    10. BUILDER MODE — grid, palette, bonds, shapes, panels, LOD
+    11. COMBAT MODE — clean render + activation popups + buff/debuff tray
+    12. CAMERA / JUICE
+    13. MAIN LOOP + INPUT + SELF-TESTS
+   ========================================================================== */
+
+/* ============================================================================
+   0. TUNABLE CONSTANTS — director knobs
+   ========================================================================== */
+const SEED_BASE   = 1337;
+const PX          = 13;       // creature pixel size (base, combat)
+const SPRING_K    = 240;
+const SPRING_D    = 15;
+const SHAKE_BASE  = 9;
+const SHAKE_CRIT  = 22;
+const HITSTOP_HIT = 0.055;
+const SLOWMO_CRIT = 0.30;
+const SLOWMO_KO   = 0.22;
+const ZOOM_PUNCH  = 0.14;
+const ZOOM_BREATH = 0.012;
+const ATB_GLOBAL  = 1.0;
+const RESULT_DUR  = 2.0;
+
+// --- LEGIBILITY KNOBS -------------------------------------------------------
+const FLARE_INTENSITY  = 1.0;
+const FLARE_RISE       = 9.0;
+const FLARE_FALL       = 2.6;
+const GLYPH_MIN_CELL   = 9.0;   // below this cell size: glyph -> simple dot (LOD)
+const GLYPH_SIZE_FRAC  = 0.62;
+const BEHAV_AMP        = 1.0;
+const INSPECT_DIM      = 0.22;
+
+// --- META / BUILDER KNOBS (the two new systems + the builder feel) ----------
+const GRID_N           = 15;    // grid is GRID_N x GRID_N (>=13 to allow growth)
+const BUILD_CELL       = 30;    // builder grid cell px (BIG -> glyphs/bonds legible)
+const COMBAT_CELL_FRAC = 0.5;   // combat renders creatures small => LOD kicks in
+const BOND_GLOW        = 1.0;   // 0..1.5 glow strength of adjacency bond lines
+const BOND_WIDTH       = 3.0;   // bond line width (builder px)
+const SHAPE_PULSE      = 1.0;   // shape-highlight pulse strength
+const SHAPE_FLASH_DUR  = 1.6;   // seconds a "newly completed" shape name floats
+const LOD_BOND_MINCELL = 14;    // below this cell size, bonds are not drawn (clutter)
+
+// Trait magnitude coefficients (per qualifying unit). Tune to taste.
+const TRAIT_K = {
+  blade_critPerPair   : 0.04,   // «Лезо»  Force↔Force  -> +crit per bonded pair
+  outpost_hpPerPair   : 7,      // «Форпост» Plate↔Vital -> +maxHP per pair
+  kindle_magPerPair   : 4.0,    // «Розпал» Ember↔Mana  -> +magic power per pair
+  flow_dodgePerPair   : 0.025,  // «Потік»  Swift↔Swift -> +dodge per pair
+  amplify_magPerPair  : 3.5,    // «Підсилення» Catalyst↔element -> +magic per pair
+  spike_atkPerLine    : 4.0,    // «Шип»  3+ Force in a line -> +atk (reach proxy)
+  bastion_blockPerSet : 0.12,   // «Бастіон» 2x2 Plate -> +block chance per block
+  heart_regenPerSet   : 1.6,    // «Серце» 5 Vital plus -> +regen/sec per cross
+  balance_accPerSym   : 0.06,   // «Рівновага» L<->R mirror -> +accuracy (flat)
+};
+const BASTION_BLOCK_CAP = 0.6;  // cap «Бастіон» block chance
+const FLOW_DODGE_CAP    = 0.30; // cap «Потік» dodge contribution (on top of base)
+
+/* ============================================================================
+   1. SEEDED RNG — Mulberry32
+   ========================================================================== */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let rng = mulberry32(SEED_BASE);
+const rnd  = () => rng();
+const rRange = (a,b) => a + (b-a)*rng();
+const rPick  = arr => arr[(rng()*arr.length)|0];
+
+/* ============================================================================
+   2. PIXEL TYPES + PALETTE + EFFECT WORDS  (from pixel-legibility.html)
+   ========================================================================== */
+const TYPE_ORDER = ['core','vital','plate','force','swift','focus',
+                    'ember','frost','spark','mana','catalyst'];
+
+const NEW_PAL = {
+  core:'#F2C84B', vital:'#2FB873', plate:'#7C8AA0', force:'#E0483F',
+  swift:'#F0C020', focus:'#EAEFF5', ember:'#F07A1E', frost:'#39C6E8',
+  spark:'#9B6BD6', mana:'#2D6FD0', catalyst:'#D14FA6',
+};
+const PIX = {
+  core:    { name:'Ядро',        eff:'Серце',      glyph:'star',    behav:'core',   magic:false, tint:'#3a2c00' },
+  vital:   { name:'Тіло',        eff:'Здоровʼя',   glyph:'heart',   behav:'vital',  magic:false, tint:'#0a3a22' },
+  plate:   { name:'Броня',       eff:'Захист',     glyph:'shield',  behav:'plate',  magic:false, tint:'#1d2531' },
+  force:   { name:'Сила',        eff:'Атака',      glyph:'blade',   behav:'force',  magic:false, tint:'#3a0d0a' },
+  swift:   { name:'Спритність',  eff:'Швидкість',  glyph:'chevron', behav:'swift',  magic:false, tint:'#3a2e00' },
+  focus:   { name:'Фокус',       eff:'Точність',   glyph:'diamond', behav:'focus',  magic:false, tint:'#2a3340' },
+  ember:   { name:'Жар',         eff:'Вогонь',     glyph:'flame',   behav:'ember',  magic:true,  tint:'#3a1500' },
+  frost:   { name:'Мороз',       eff:'Лід',        glyph:'snow',    behav:'frost',  magic:true,  tint:'#06303a' },
+  spark:   { name:'Іскра',       eff:'Блискавка',  glyph:'bolt',    behav:'spark',  magic:true,  tint:'#2a123a' },
+  mana:    { name:'Мана',        eff:'Паливо',     glyph:'droplet', behav:'mana',   magic:true,  tint:'#06203a' },
+  catalyst:{ name:'Каталізатор', eff:'Підсилення', glyph:'ring',    behav:'catalyst',magic:true, tint:'#3a0d2a' },
+};
+let PALETTE = NEW_PAL;
+function colorOfType(type){ return (PALETTE[type]) || '#888'; }
+
+// base stat coefficients
+const STAT = {
+  hpBase: 60,  hpPerVital: 9,
+  armorPerPlate: 2.4,
+  atkBase: 6,  atkPerForce: 3.0,
+  spdBase: 0.82, spdPerSwift: 0.05,
+  dodgePerSwift: 0.035,  dodgeCap: 0.34,
+  critPerFocus: 0.05,    critCap: 0.45,
+  accPerFocus: 0.03,
+  magPerElement: 5.0,    magPerCatalyst: 4.0, magCatalystMul: 0.18,
+};
+
+/* ============================================================================
+   3. MOVESET DATA + SCHOOLS + STATUSES
+   ========================================================================== */
+const SCHOOL = {
+  fire:  { name:'Вогонь',    glyph:'🔥', col:'#F07A1E', col2:'#ffd24a', light:'#ff5a1e' },
+  frost: { name:'Лід',       glyph:'❄', col:'#39C6E8', col2:'#bff0ff', light:'#3aa6ff' },
+  spark: { name:'Блискавка', glyph:'⚡', col:'#9B6BD6', col2:'#ffffff', light:'#9b6bff' },
+};
+const MOVES = {
+  fist:  { kind:'fist',  icon:'👊', label:"б'є кулаком",          windUp:0.10, recover:0.18, power:9,  type:'phys', ranged:false, double:true,  weight:3.0,
+           req:()=>true },
+  sword: { kind:'sword', icon:'⚔️', label:"б'є мечем",            windUp:0.28, recover:0.34, power:20, type:'phys', ranged:false, critBonus:0.22, weight:2.0,
+           req:c=>count(c,'force')>=3 },
+  bow:   { kind:'bow',   icon:'🏹', label:"стріляє з лука",       windUp:0.22, recover:0.26, power:15, type:'phys', ranged:true,  weight:1.6,
+           req:c=>count(c,'swift')>=2 },
+  fire:  { kind:'fire',  icon:'🔥', label:"кастує Вогняну кулю",  windUp:0.40, recover:0.36, power:18, type:'magic',ranged:true,  school:'fire',  status:'burn',  weight:1.3,
+           req:c=>count(c,'ember')>=1 && count(c,'mana')>=1 },
+  frost: { kind:'frost', icon:'❄️', label:"кастує Крижану стрілу",windUp:0.40, recover:0.36, power:14, type:'magic',ranged:true,  school:'frost', status:'slow',  weight:1.3,
+           req:c=>count(c,'frost')>=1 && count(c,'mana')>=1 },
+  spark: { kind:'spark', icon:'⚡', label:"б'є Розрядом",         windUp:0.34, recover:0.34, power:16, type:'magic',ranged:true,  school:'spark', status:'shock', weight:1.2,
+           req:c=>count(c,'spark')>=1 && count(c,'mana')>=1 },
+};
+const MOVE_ORDER = ['fist','sword','bow','fire','frost','spark'];
+
+// STATUSES generalized into a tray. sign:+1 buff (green), -1 debuff (red).
+const STATUS_DEF = {
+  burn:    { uk:'Підпал',       glyph:'🔥', col:'#F07A1E', dur:4.2, tick:1.0, dmg:6, sign:-1, traitKind:null },
+  slow:    { uk:'Сповільнення', glyph:'❄', col:'#39C6E8', dur:5.0, tick:0,   dmg:0, atbMul:0.45, sign:-1 },
+  shock:   { uk:'Шок',          glyph:'⚡', col:'#9B6BD6', dur:3.0, tick:0,   dmg:0, dmgTakenMul:1.5, sign:-1 },
+  // POSITIVE buffs (green-framed). Driven by traits.
+  bastion: { uk:'Бастіон',      glyph:'shield',iconTrait:'bastion', col:'#7CE0A0', dur:6.0, tick:0, sign:+1, block:true },
+  heartReg:{ uk:'Серце',        glyph:'cross', iconTrait:'heart',   col:'#5BE08A', dur:5.0, tick:1.0, heal:5, sign:+1 },
+};
+
+/* ============================================================================
+   4. META — synergy + shape DEFS, detectors, deriveStats (folds traits)
+   ----------------------------------------------------------------------------
+   Everything data-driven: adding a new trait = a few lines in SYNERGY_DEFS /
+   SHAPE_DEFS plus (optionally) an icon drawer and a fold rule.
+
+   detectSynergies(build) and detectShapes(build) each return TRAITS:
+     { key, name, icon, magnitude, pixelIndices, kind:'adjacency'|'shape',
+       effect, bonds? }   (bonds = [[i,j],...] for adjacency badge/links)
+   ========================================================================== */
+function count(build, type){ let n=0; for(const p of build) if(p.type===type) n++; return n; }
+function key2(p){ return p.gx+','+p.gy; }
+function orthAdjacent(a,b){
+  const dx=Math.abs(a.gx-b.gx), dy=Math.abs(a.gy-b.gy);
+  return (dx+dy)===1;
+}
+
+/* ---- ADJACENCY SYNERGIES (named pairwise, ORTHOGONAL touch) ---------------
+   Each def: a predicate match(typeA,typeB) on an orthogonally-touching pair.
+   Aggregate bonded-pair count -> magnitude. Bonds collected for visualization.
+   ------------------------------------------------------------------------- */
+const ELEMENTS = ['ember','frost','spark'];
+const SYNERGY_DEFS = [
+  { key:'blade',   name:'«Лезо»',      kind:'adjacency', icon:'blade',
+    effect:'+крит за кожну пару Сила↔Сила',
+    match:(a,b)=> a==='force' && b==='force' },
+  { key:'outpost', name:'«Форпост»',   kind:'adjacency', icon:'outpost',
+    effect:'+HP за кожну пару Броня↔Тіло',
+    match:(a,b)=> (a==='plate'&&b==='vital')||(a==='vital'&&b==='plate') },
+  { key:'kindle',  name:'«Розпал»',    kind:'adjacency', icon:'kindle',
+    effect:'+маг.сила за кожну пару Жар↔Мана',
+    match:(a,b)=> (a==='ember'&&b==='mana')||(a==='mana'&&b==='ember') },
+  { key:'flow',    name:'«Потік»',     kind:'adjacency', icon:'flow',
+    effect:'+ухил за кожну пару Спритність↔Спритність',
+    match:(a,b)=> a==='swift' && b==='swift' },
+  { key:'amplify', name:'«Підсилення»',kind:'adjacency', icon:'amplify',
+    effect:'+маг. за пару Каталізатор↔(жар/мороз/іскра)',
+    match:(a,b)=> (a==='catalyst'&&ELEMENTS.includes(b))||(b==='catalyst'&&ELEMENTS.includes(a)) },
+];
+
+function detectSynergies(build){
+  // index by cell for O(1) neighbour lookups
+  const byCell = new Map();
+  build.forEach((p,i)=> byCell.set(key2(p), i));
+  // accumulate per-def: pair count + bond list
+  const acc = {};
+  for(const d of SYNERGY_DEFS) acc[d.key] = { pairs:0, bonds:[], idx:new Set() };
+  // iterate each ordered unique pair (i<j) that is orthogonally adjacent
+  for(let i=0;i<build.length;i++){
+    const p=build[i];
+    // only look right + down neighbours to count each undirected pair once
+    const neigh = [ [p.gx+1,p.gy], [p.gx,p.gy+1] ];
+    for(const [nx,ny] of neigh){
+      const j = byCell.get(nx+','+ny);
+      if(j===undefined) continue;
+      const q=build[j];
+      for(const d of SYNERGY_DEFS){
+        if(d.match(p.type,q.type)){
+          const a=acc[d.key];
+          a.pairs++; a.bonds.push([i,j]); a.idx.add(i); a.idx.add(j);
+        }
+      }
+    }
+  }
+  const traits=[];
+  for(const d of SYNERGY_DEFS){
+    const a=acc[d.key];
+    if(a.pairs>0){
+      traits.push({ key:d.key, name:d.name, icon:d.icon, kind:'adjacency',
+        magnitude:a.pairs, pixelIndices:[...a.idx], bonds:a.bonds, effect:d.effect });
+    }
+  }
+  return traits;
+}
+
+/* ---- SHAPE RECIPES (named patterns of a given type) -----------------------
+   Each def: detect(build, byCell) -> { count, sets:[[idx...]...] }.
+   magnitude = number of distinct satisfied instances (lines/blocks/crosses)
+   or 1 for the whole-build symmetry flag.
+   ------------------------------------------------------------------------- */
+function buildCellIndex(build){
+  const m=new Map();
+  build.forEach((p,i)=> m.set(key2(p), i));
+  return m;
+}
+function cellOf(byCell, build, gx, gy){
+  const i = byCell.get(gx+','+gy);
+  return (i===undefined) ? null : { i, p:build[i] };
+}
+
+const SHAPE_DEFS = [
+  { key:'spike', name:'«Шип»', kind:'shape', icon:'spike',
+    effect:'3+ Сила в лінію → +досяжність/атака',
+    detect(build, byCell){
+      // find maximal horizontal/vertical runs of >=3 'force'; one instance per run
+      const sets=[]; const used=new Set();
+      const isForce=(gx,gy)=>{ const c=cellOf(byCell,build,gx,gy); return c&&c.p.type==='force'?c.i:-1; };
+      // horizontal runs: only start where left neighbour isn't force
+      for(let k=0;k<build.length;k++){
+        const p=build[k]; if(p.type!=='force') continue;
+        // HORIZONTAL
+        if(isForce(p.gx-1,p.gy)<0){
+          const run=[]; let gx=p.gx;
+          let id; while((id=isForce(gx,p.gy))>=0){ run.push(id); gx++; }
+          if(run.length>=3){ sets.push(run.slice()); }
+        }
+        // VERTICAL
+        if(isForce(p.gx,p.gy-1)<0){
+          const run=[]; let gy=p.gy;
+          let id; while((id=isForce(p.gx,gy))>=0){ run.push(id); gy++; }
+          if(run.length>=3){ sets.push(run.slice()); }
+        }
+      }
+      return { count:sets.length, sets };
+    } },
+  { key:'bastion', name:'«Бастіон»', kind:'shape', icon:'bastion',
+    effect:'2×2 блок Броні → шанс блоку',
+    detect(build, byCell){
+      const sets=[];
+      const isPlate=(gx,gy)=>{ const c=cellOf(byCell,build,gx,gy); return c&&c.p.type==='plate'?c.i:-1; };
+      const seen=new Set();
+      for(let k=0;k<build.length;k++){
+        const p=build[k]; if(p.type!=='plate') continue;
+        // top-left corner of a 2x2
+        const a=isPlate(p.gx,p.gy), b=isPlate(p.gx+1,p.gy),
+              c2=isPlate(p.gx,p.gy+1), d=isPlate(p.gx+1,p.gy+1);
+        if(a>=0&&b>=0&&c2>=0&&d>=0){
+          const sig=p.gx+'_'+p.gy;
+          if(!seen.has(sig)){ seen.add(sig); sets.push([a,b,c2,d]); }
+        }
+      }
+      return { count:sets.length, sets };
+    } },
+  { key:'heart', name:'«Серце»', kind:'shape', icon:'heart5',
+    effect:'5 Тіло хрестом → +регенерація',
+    detect(build, byCell){
+      const sets=[];
+      const isVital=(gx,gy)=>{ const c=cellOf(byCell,build,gx,gy); return c&&c.p.type==='vital'?c.i:-1; };
+      for(let k=0;k<build.length;k++){
+        const p=build[k]; if(p.type!=='vital') continue;
+        const c0=isVital(p.gx,p.gy),
+              up=isVital(p.gx,p.gy-1), dn=isVital(p.gx,p.gy+1),
+              lf=isVital(p.gx-1,p.gy), rt=isVital(p.gx+1,p.gy);
+        if(c0>=0&&up>=0&&dn>=0&&lf>=0&&rt>=0){
+          sets.push([c0,up,dn,lf,rt]);
+        }
+      }
+      return { count:sets.length, sets };
+    } },
+  { key:'balance', name:'«Рівновага»', kind:'shape', icon:'balance',
+    effect:'дзеркальна симетрія L↔R → +точність',
+    detect(build, byCell){
+      // whole-build left<->right mirror symmetry about the build's vertical axis.
+      // axis = (minGx+maxGx). For each cell at (gx,gy) require a same-type cell
+      // at (axis-gx, gy). Need >=2 cells off-axis to count as a real mirror.
+      if(build.length<3) return { count:0, sets:[] };
+      let minGx=Infinity,maxGx=-Infinity;
+      for(const p of build){ if(p.gx<minGx)minGx=p.gx; if(p.gx>maxGx)maxGx=p.gx; }
+      const axis = minGx+maxGx; // mirrored gx = axis - gx
+      let offAxis=0, mirrored=true;
+      for(const p of build){
+        const mx = axis - p.gx;
+        if(mx!==p.gx) offAxis++;
+        const c=cellOf(byCell,build,mx,p.gy);
+        if(!c || c.p.type!==p.type){ mirrored=false; break; }
+      }
+      if(mirrored && offAxis>=2){
+        return { count:1, sets:[ build.map((_,i)=>i) ] };
+      }
+      return { count:0, sets:[] };
+    } },
+];
+
+function detectShapes(build){
+  const byCell = buildCellIndex(build);
+  const traits=[];
+  for(const d of SHAPE_DEFS){
+    const r=d.detect(build, byCell);
+    if(r.count>0){
+      const idx=new Set();
+      for(const s of r.sets) for(const i of s) idx.add(i);
+      traits.push({ key:d.key, name:d.name, icon:d.icon, kind:'shape',
+        magnitude:r.count, pixelIndices:[...idx], sets:r.sets, effect:d.effect });
+    }
+  }
+  return traits;
+}
+
+function detectTraits(build){
+  return detectSynergies(build).concat(detectShapes(build));
+}
+
+/* ---- deriveStats — base derivation + FOLD trait magnitudes ----------------
+   The traits are mostly passive/build-time; we fold their magnitudes here so
+   they actually change the hero. Returns stats + the trait list + per-trait
+   stat deltas (for the panel + combat procs).
+   ------------------------------------------------------------------------- */
+function adjacentAny(a, b){ return Math.abs(a.gx-b.gx)<=1 && Math.abs(a.gy-b.gy)<=1 && !(a.gx===b.gx&&a.gy===b.gy); }
+
+function deriveStats(build){
+  const c = t => count(build, t);
+  const vital=c('vital'), plate=c('plate'), force=c('force'), swift=c('swift'),
+        focus=c('focus'), catalyst=c('catalyst');
+  const elements = c('ember') + c('frost') + c('spark');
+
+  // base magic (kept from engine, incl. catalyst adjacency boost)
+  let mag = elements*STAT.magPerElement + catalyst*STAT.magPerCatalyst;
+  if(catalyst>0 && elements>0){
+    let adjEl=0;
+    for(const p of build){
+      if(!ELEMENTS.includes(p.type)) continue;
+      for(const q of build){ if(q.type==='catalyst' && adjacentAny(p,q)){ adjEl++; break; } }
+    }
+    mag *= (1 + STAT.magCatalystMul*catalyst);
+    mag += adjEl*3.0;
+  }
+
+  let maxHP  = STAT.hpBase + vital*STAT.hpPerVital;
+  let armor  = plate*STAT.armorPerPlate;
+  let atk    = STAT.atkBase + force*STAT.atkPerForce;
+  let speed  = STAT.spdBase + swift*STAT.spdPerSwift;
+  let dodge  = Math.min(STAT.dodgeCap, swift*STAT.dodgePerSwift);
+  let crit   = Math.min(STAT.critCap, focus*STAT.critPerFocus);
+  let acc    = focus*STAT.accPerFocus;
+
+  // ---- FOLD TRAITS ---------------------------------------------------------
+  const traits = detectTraits(build);
+  let blockChance = 0;     // «Бастіон»
+  let regenPerSec = 0;     // «Серце»
+  let extraDodge  = 0;     // «Потік»
+  const traitDelta = {};   // human-readable per-trait stat contribution
+  for(const tr of traits){
+    const m = tr.magnitude;
+    switch(tr.key){
+      case 'blade':   { const d=m*TRAIT_K.blade_critPerPair;   crit=Math.min(STAT.critCap+0.3, crit+d); traitDelta[tr.key]='+'+(d*100).toFixed(0)+'% крит'; break; }
+      case 'outpost': { const d=m*TRAIT_K.outpost_hpPerPair;   maxHP+=d;                                  traitDelta[tr.key]='+'+d+' HP'; break; }
+      case 'kindle':  { const d=m*TRAIT_K.kindle_magPerPair;   mag+=d;                                    traitDelta[tr.key]='+'+d.toFixed(0)+' маг.'; break; }
+      case 'flow':    { const d=Math.min(FLOW_DODGE_CAP, m*TRAIT_K.flow_dodgePerPair); extraDodge+=d;      traitDelta[tr.key]='+'+(d*100).toFixed(0)+'% ухил'; break; }
+      case 'amplify': { const d=m*TRAIT_K.amplify_magPerPair;  mag+=d;                                    traitDelta[tr.key]='+'+d.toFixed(0)+' маг.'; break; }
+      case 'spike':   { const d=m*TRAIT_K.spike_atkPerLine;    atk+=d;                                    traitDelta[tr.key]='+'+d.toFixed(0)+' атака'; break; }
+      case 'bastion': { const d=Math.min(BASTION_BLOCK_CAP, m*TRAIT_K.bastion_blockPerSet); blockChance=Math.max(blockChance,d); traitDelta[tr.key]='+'+(d*100).toFixed(0)+'% блок'; break; }
+      case 'heart':   { const d=m*TRAIT_K.heart_regenPerSet;   regenPerSec+=d;                            traitDelta[tr.key]='+'+d.toFixed(1)+' рег/с'; break; }
+      case 'balance': { const d=TRAIT_K.balance_accPerSym;     acc+=d;                                    traitDelta[tr.key]='+'+(d*100).toFixed(0)+'% точн.'; break; }
+    }
+  }
+  dodge = Math.min(STAT.dodgeCap+FLOW_DODGE_CAP, dodge+extraDodge);
+
+  return {
+    maxHP: Math.round(maxHP),
+    armor: +armor.toFixed(1),
+    atk, speed,
+    dodge, crit, acc,
+    magic:+mag.toFixed(1),
+    blockChance, regenPerSec,
+    traits, traitDelta,
+    counts:{ vital, plate, force, swift, focus, catalyst, elements },
+  };
+}
+function deriveMoveset(build){
+  const set = [];
+  for(const k of MOVE_ORDER){ if(MOVES[k].req(build)) set.push(k); }
+  return set;
+}
+function effectivePower(f, move){
+  if(move.type==='magic') return move.power + f.stats.magic;
+  return move.power + f.stats.atk - STAT.atkBase;
+}
+
+/* ============================================================================
+   5. ROSTER — preset builds (incl. a "great big build")
+   ========================================================================== */
+function B(rows){ return rows.map(([gx,gy,type])=>({gx,gy,type})); }
+
+const HERO_BUILD = B([
+  [0,0,'core'],
+  [-1,0,'vital'],[0,1,'vital'],[-1,1,'vital'],[1,1,'vital'],
+  [-1,2,'vital'],[0,2,'vital'],[1,2,'vital'],
+  [-2,1,'plate'],[-2,2,'plate'],
+  [1,0,'force'],[2,0,'force'],[3,0,'force'],
+  [0,-1,'focus'],
+  [2,-1,'ember'],[1,-1,'mana'],
+  [-1,3,'vital'],[1,3,'vital'],
+]);
+const BRUTE_BUILD = B([
+  [0,0,'core'],
+  [-1,0,'vital'],[1,0,'vital'],
+  [-2,1,'vital'],[-1,1,'vital'],[0,1,'vital'],[1,1,'vital'],[2,1,'vital'],
+  [-2,2,'vital'],[-1,2,'vital'],[0,2,'vital'],[1,2,'vital'],[2,2,'vital'],
+  [-2,3,'vital'],[-1,3,'vital'],[0,3,'vital'],[1,3,'vital'],[2,3,'vital'],
+  [-3,1,'plate'],[-3,2,'plate'],[-3,3,'plate'],
+  [3,1,'plate'],[3,2,'plate'],[3,3,'plate'],
+  [-1,-1,'plate'],[0,-1,'plate'],[1,-1,'plate'],
+  [2,0,'force'],[3,0,'force'],[4,0,'force'],
+  [-1,4,'vital'],[1,4,'vital'],
+]);
+const MAGE_BUILD = B([
+  [0,0,'core'],
+  [0,1,'vital'],[-1,1,'vital'],[1,1,'vital'],
+  [0,2,'vital'],
+  [-1,0,'ember'],[1,0,'frost'],
+  [-1,-1,'ember'],[1,-1,'frost'],
+  [0,-1,'catalyst'],
+  [-2,0,'mana'],[2,0,'mana'],
+  [-1,2,'vital'],[1,2,'vital'],
+]);
+
+// --- THE "GREAT BIG BUILD" (~80 pixels) — exercises scaling + many traits ---
+const TITAN_BUILD = B([
+  [0,0,'core'],
+  // big vital torso (with «Серце» crosses inside)
+  [-1,0,'vital'],[1,0,'vital'],[-2,0,'vital'],[2,0,'vital'],
+  [-2,1,'vital'],[-1,1,'vital'],[0,1,'vital'],[1,1,'vital'],[2,1,'vital'],
+  [-2,2,'vital'],[-1,2,'vital'],[0,2,'vital'],[1,2,'vital'],[2,2,'vital'],
+  [-2,3,'vital'],[-1,3,'vital'],[0,3,'vital'],[1,3,'vital'],[2,3,'vital'],
+  [-1,4,'vital'],[0,4,'vital'],[1,4,'vital'],
+  // plate shell (2x2 «Бастіон» blocks on the flanks; «Форпост» where touching vital)
+  [-3,0,'plate'],[-4,0,'plate'],[-3,1,'plate'],[-4,1,'plate'],
+  [3,0,'plate'],[4,0,'plate'],[3,1,'plate'],[4,1,'plate'],
+  [-3,2,'plate'],[-3,3,'plate'],[3,2,'plate'],[3,3,'plate'],
+  [-1,-1,'plate'],[0,-1,'plate'],[1,-1,'plate'],
+  // force lines (mirror) -> «Шип» + «Лезо»
+  [5,0,'force'],[6,0,'force'],[7,0,'force'],
+  [-5,0,'force'],[-6,0,'force'],[-7,0,'force'],
+  [5,1,'force'],[-5,1,'force'],
+  // swift wings -> «Потік»
+  [2,-1,'swift'],[3,-1,'swift'],[4,-1,'swift'],
+  [-2,-1,'swift'],[-3,-1,'swift'],[-4,-1,'swift'],
+  // focus crown
+  [0,-2,'focus'],[-1,-2,'focus'],[1,-2,'focus'],[0,-3,'focus'],
+  // magic core: ember↔mana «Розпал», catalyst↔element «Підсилення»
+  [-2,-2,'ember'],[-2,-3,'mana'],[-3,-2,'mana'],
+  [2,-2,'frost'],[2,-3,'mana'],[3,-2,'mana'],
+  [0,-4,'spark'],
+  [-1,-3,'catalyst'],[1,-3,'catalyst'],[-3,-3,'catalyst'],[3,-3,'catalyst'],
+  // bottom growth
+  [-2,4,'vital'],[2,4,'vital'],[-1,5,'vital'],[0,5,'vital'],[1,5,'vital'],
+]);
+
+const PRESETS = {
+  hero:  { name:'«Піксель» (Герой)', build:HERO_BUILD },
+  mage:  { name:'«Чаклун» (Маг)',    build:MAGE_BUILD },
+  brute: { name:'«Громило»',         build:BRUTE_BUILD },
+  titan: { name:'«Титан» (великий)', build:TITAN_BUILD },
+};
+
+// Opponents rotated through in combat
+const ROSTER = {
+  brute:   { id:'brute',   name:'«Громило»',  arch:'Громило',     build:BRUTE_BUILD,    scale:1.12, accent:'#e08a5a', side:+1 },
+  mage:    { id:'mage',    name:'«Чаклун»',   arch:'Чаклун',      build:MAGE_BUILD,     scale:0.9,  accent:'#cfa0ff', side:+1 },
+  hero:    { id:'hero',    name:'«Піксель»',  arch:'Універсал',   build:HERO_BUILD,     scale:1.0,  accent:'#add0ff', side:+1 },
+};
+const FOE_ORDER = ['brute','mage','hero'];
+
+/* ============================================================================
+   6. TRAIT ICON DRAWERS — small unique symbols (canvas paths, NOT emoji)
+   Each draws centred at (x,y) within size s, in colour col. Reuses some glyph
+   shapes but composes a distinct trait emblem.
+   ========================================================================== */
+function drawTraitIcon(key, x, y, s, col){
+  const g=s*0.40;
+  ctx.save(); ctx.translate(x,y);
+  ctx.strokeStyle=col; ctx.fillStyle=col;
+  ctx.lineWidth=Math.max(1.4, s*0.10); ctx.lineJoin='round'; ctx.lineCap='round';
+  switch(key){
+    case 'blade': {        // «Лезо»: two crossed blades
+      ctx.beginPath(); ctx.moveTo(-g,-g); ctx.lineTo(g,g); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(g,-g);  ctx.lineTo(-g,g); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0,0,g*0.22,0,7); ctx.fill();
+      break; }
+    case 'outpost': {      // «Форпост»: tower (shield+battlement)
+      ctx.beginPath();
+      ctx.moveTo(-g*0.7,-g*0.3); ctx.lineTo(-g*0.7,g); ctx.lineTo(g*0.7,g);
+      ctx.lineTo(g*0.7,-g*0.3); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-g*0.7,-g*0.3); ctx.lineTo(-g*0.7,-g*0.7); ctx.lineTo(-g*0.25,-g*0.7);
+      ctx.lineTo(-g*0.25,-g*0.45); ctx.lineTo(g*0.25,-g*0.45); ctx.lineTo(g*0.25,-g*0.7);
+      ctx.lineTo(g*0.7,-g*0.7); ctx.lineTo(g*0.7,-g*0.3); ctx.stroke();
+      break; }
+    case 'kindle': {       // «Розпал»: flame + drop
+      ctx.beginPath();
+      ctx.moveTo(0,g); ctx.bezierCurveTo(g*0.95,g*0.3, g*0.4,-g*0.5, 0,-g);
+      ctx.bezierCurveTo(-g*0.3,-g*0.2,-g*0.85,g*0.2, 0,g); ctx.fill();
+      break; }
+    case 'flow': {         // «Потік»: double chevron (wind)
+      ctx.beginPath(); ctx.moveTo(-g*0.7,-g*0.6); ctx.lineTo(g*0.0,0); ctx.lineTo(-g*0.7,g*0.6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,-g*0.6); ctx.lineTo(g*0.7,0); ctx.lineTo(0,g*0.6); ctx.stroke();
+      break; }
+    case 'amplify': {      // «Підсилення»: ring + plus (catalyst)
+      ctx.beginPath(); ctx.arc(0,0,g*0.7,0,7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.4,0); ctx.lineTo(g*0.4,0);
+      ctx.moveTo(0,-g*0.4); ctx.lineTo(0,g*0.4); ctx.stroke();
+      break; }
+    case 'spike': {        // «Шип»: arrow spike to the right
+      ctx.beginPath(); ctx.moveTo(-g,0); ctx.lineTo(g*0.5,0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(g,0); ctx.lineTo(g*0.3,-g*0.5); ctx.lineTo(g*0.3,g*0.5);
+      ctx.closePath(); ctx.fill();
+      break; }
+    case 'bastion': {      // «Бастіон»: shield
+      ctx.beginPath();
+      ctx.moveTo(0,-g); ctx.lineTo(g*0.8,-g*0.55); ctx.lineTo(g*0.8,g*0.2);
+      ctx.quadraticCurveTo(g*0.8,g*0.9, 0,g);
+      ctx.quadraticCurveTo(-g*0.8,g*0.9,-g*0.8,g*0.2);
+      ctx.lineTo(-g*0.8,-g*0.55); ctx.closePath(); ctx.fill();
+      break; }
+    case 'shield': {       // status «Бастіон» buff icon == shield outline (green)
+      ctx.beginPath();
+      ctx.moveTo(0,-g); ctx.lineTo(g*0.8,-g*0.55); ctx.lineTo(g*0.8,g*0.2);
+      ctx.quadraticCurveTo(g*0.8,g*0.9, 0,g);
+      ctx.quadraticCurveTo(-g*0.8,g*0.9,-g*0.8,g*0.2);
+      ctx.lineTo(-g*0.8,-g*0.55); ctx.closePath(); ctx.stroke();
+      break; }
+    case 'heart':
+    case 'heart5': {       // «Серце»: cross-of-hearts / plus heart
+      ctx.beginPath();
+      ctx.moveTo(0, g*0.85);
+      ctx.bezierCurveTo(g*1.15, g*0.05, g*0.5,-g*0.9, 0,-g*0.1);
+      ctx.bezierCurveTo(-g*0.5,-g*0.9,-g*1.15, g*0.05, 0, g*0.85);
+      ctx.fill();
+      break; }
+    case 'cross': {        // status «Серце» regen icon: medic plus
+      ctx.lineWidth=Math.max(2,s*0.18);
+      ctx.beginPath(); ctx.moveTo(0,-g*0.8); ctx.lineTo(0,g*0.8);
+      ctx.moveTo(-g*0.8,0); ctx.lineTo(g*0.8,0); ctx.stroke();
+      break; }
+    case 'balance': {      // «Рівновага»: scales / mirror
+      ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(0,g*0.5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g,-g*0.4); ctx.lineTo(g,-g*0.4); ctx.stroke();
+      ctx.beginPath(); ctx.arc(-g*0.7,0,g*0.32,0,Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(g*0.7,0,g*0.32,0,Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.4,g*0.5); ctx.lineTo(g*0.4,g*0.5); ctx.stroke();
+      break; }
+    default: {
+      ctx.beginPath(); ctx.arc(0,0,g*0.6,0,7); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+// trait accent colours (for badges/panel)
+const TRAIT_COL = {
+  blade:'#E0483F', outpost:'#7C8AA0', kindle:'#F07A1E', flow:'#F0C020',
+  amplify:'#D14FA6', spike:'#ff8d6b', bastion:'#7CE0A0', heart:'#5BE08A',
+  heart5:'#5BE08A', balance:'#EAEFF5',
+};
+function traitColor(key){ return TRAIT_COL[key]||'#cfe0ff'; }
+
+/* ============================================================================
+   7. SIM — combatants, ATB loop, resolution, EVENT BUS, trait procs
+   ========================================================================== */
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W, H, ground;
+function resize(){
+  W = cv.width = innerWidth; H = cv.height = innerHeight;
+  ground = H*0.72;
+}
+addEventListener('resize', resize); resize();
+
+function makeFighter(build, opts){
+  opts = opts||{};
+  const stats = deriveStats(build);
+  const moveset = deriveMoveset(build);
+  const side = opts.side||-1;
+  const scale = opts.scale||1.0;
+  return {
+    id: opts.id||'hero', name: opts.name||'Герой', arch: opts.arch||'', accent: opts.accent||'#add0ff',
+    side, face: side<0 ? 1 : -1, scale, boss: !!opts.boss,
+    homeX: side<0 ? W*0.32 : W*0.68,
+    build, stats, moveset,
+    maxHP: stats.maxHP, hp: stats.maxHP, armor: stats.armor,
+    blockChance: stats.blockChance, regenPerSec: stats.regenPerSec,
+    speed: stats.speed * (side<0?1.04:1.0),
+    atb: side<0 ? 0.10 : 0.0,
+    statuses: [],
+    moveCursor: (side<0?0:1),
+    px: build.map(p => ({ gx:p.gx, gy:p.gy, t:p.type, ox:0,oy:0,vx:0,vy:0, flare:0 })),
+    advance:0, knock:0, knockV:0,
+    hpShown:stats.maxHP, hpChip:stats.maxHP, chipDelay:0,
+    flash:0, charge:0, chargeSchool:null, squash:0, alive:true,
+    regenAcc:0,
+  };
+}
+
+let hero, enemy, fighters = [];
+const events = [];
+function emit(e){ events.push(e); }
+
+let phase = 'fight';   // combat sub-phase: 'fight' | 'result'
+let winner = null;
+const actors = [];
+const projectiles = [];
+
+function pickMove(f){
+  const ms = f.moveset;
+  const pool = [];
+  for(let i=0;i<ms.length;i++){
+    const k = ms[i];
+    let w = MOVES[k].weight;
+    if(i === f.moveCursor % ms.length) w *= 3.0;
+    for(let j=0;j<w*10;j++) pool.push(k);
+  }
+  f.moveCursor++;
+  return MOVES[rPick(pool)];
+}
+
+function startAction(f){
+  const tgt = (f===hero) ? enemy : hero;
+  const move = pickMove(f);
+  actors.push({ f, tgt, move, t:0, stage:'windup', fired:false });
+  f.squash = (move.type==='magic' || move.kind==='sword') ? 1 : 0.5;
+  if(move.type==='magic'){ f.charge = 0.0001; f.chargeSchool = move.school; }
+  flareMovePixels(f, move.kind, 1.0);
+  // «Розпал» empowers a magic cast: activation popup
+  if(move.type==='magic' && f.stats.traitDelta.kindle){
+    emit({ kind:'traitProc', f, trait:'kindle' });
+  }
+  emit({ kind:'telegraph', source:f, move });
+}
+
+function resolveHit(f, tgt, move){
+  // «Бастіон»: chance to BLOCK an incoming hit entirely (and show buff + popup)
+  if(tgt.blockChance>0 && rnd()<tgt.blockChance){
+    // grant/refresh a visible green «Бастіон» buff and announce the block
+    applyStatus(tgt, 'bastion');
+    emit({ kind:'block', source:f, target:tgt, move });
+    emit({ kind:'traitProc', f:tgt, trait:'bastion' });
+    return;
+  }
+  const slowed = tgt.statuses.some(s=>s.key==='slow');
+  const dodge = Math.max(0.02, tgt.stats.dodge - (slowed?0.07:0));
+  const acc   = f.stats.acc;
+  const hitChance = 0.92 - dodge + acc;
+  const isHit = rnd() < hitChance;
+  if(!isHit){
+    if(tgt.stats.traitDelta.flow) emit({ kind:'traitProc', f:tgt, trait:'flow' });
+    emit({ kind:'resolve', move, source:f, target:tgt, hit:false, dodge:true, crit:false, damage:0 });
+    return;
+  }
+  const critChance = f.stats.crit + (move.critBonus||0);
+  const isCrit = rnd() < critChance;
+  let dmg = effectivePower(f, move) + Math.floor(rRange(-2,3));
+  if(move.type==='phys') dmg = Math.max(1, dmg - tgt.armor);
+  else                   dmg = Math.max(1, dmg);
+  if(isCrit) dmg = Math.round(dmg * 1.8);
+  const shock = tgt.statuses.find(s=>s.key==='shock');
+  let shockAmp = false;
+  if(shock){ dmg = Math.round(dmg * STATUS_DEF.shock.dmgTakenMul); shockAmp = true;
+             tgt.statuses.splice(tgt.statuses.indexOf(shock),1); }
+  dmg = Math.round(dmg);
+  applyDamage(tgt, dmg);
+  let appliedStatus = null;
+  if(move.status){ applyStatus(tgt, move.status); appliedStatus = move.status; }
+  // «Лезо» crit activation
+  if(isCrit && f.stats.traitDelta.blade) emit({ kind:'traitProc', f, trait:'blade' });
+  emit({ kind:'resolve', move, source:f, target:tgt, hit:true, dodge:false,
+         crit:isCrit, damage:dmg, status:appliedStatus, shockAmp });
+  if(tgt.hp<=0 && tgt.alive){ killFighter(tgt, f); }
+}
+function applyDamage(tgt, dmg){
+  tgt.hp = Math.max(0, tgt.hp - dmg);
+  tgt.chipDelay = 0.45; tgt.flash = 1;
+}
+function applyStatus(tgt, key){
+  const def = STATUS_DEF[key];
+  const existing = tgt.statuses.find(s=>s.key===key);
+  if(existing){ existing.dur = def.dur; if(existing.stacks<9) existing.stacks++; }
+  else tgt.statuses.push({ key, dur:def.dur, tickT: def.tick||0, stacks:1 });
+}
+function killFighter(tgt, by){
+  tgt.alive = false; tgt.hp = 0;
+  winner = by;
+  triggerSlowmo(SLOWMO_KO, 1.1);
+  shake = SHAKE_CRIT*1.3;
+  const sc = depthScale(tgt) * tgt.scale;
+  const cx = creatureScreenX(tgt), cy = ground - 3.2*PX*tgt.scale*combatCellMul();
+  for(const p of tgt.px){
+    debris.push({ x: cx + p.gx*PX*sc*combatCellMul(), y: cy + p.gy*PX*sc*combatCellMul(),
+      vx:(rnd()-.5)*520, vy:-(180+rnd()*420),
+      c: colorOfType(p.t), t:p.t, life:1.4+rnd()*0.8, sz:PX*tgt.scale*combatCellMul() });
+  }
+  emit({ kind:'ko', winner:by, loser:tgt });
+  startResult();
+}
+
+function simStep(dt){
+  for(const f of fighters){
+    if(!f.alive) continue;
+    // «Серце» passive regen (also surfaces as a green buff chip while active)
+    if(f.regenPerSec>0 && f.hp>0 && f.hp<f.maxHP){
+      f.regenAcc += dt;
+      // keep a persistent green «Серце» buff visible while regen is meaningful
+      if(!f.statuses.some(s=>s.key==='heartReg')) applyStatus(f, 'heartReg');
+      if(f.regenAcc>=1){
+        f.regenAcc-=1;
+        const heal=Math.round(f.regenPerSec);
+        f.hp=Math.min(f.maxHP, f.hp+heal); f.chipDelay=0.3;
+        emit({ kind:'regen', f, heal });
+        emit({ kind:'traitProc', f, trait:'heart' });
+      }
+    }
+    // statuses
+    for(let i=f.statuses.length-1;i>=0;i--){
+      const s = f.statuses[i]; const def = STATUS_DEF[s.key];
+      s.dur -= dt;
+      if(def.tick>0){
+        s.tickT -= dt;
+        if(s.tickT<=0){
+          s.tickT += def.tick;
+          if(def.dmg && f.hp>0){
+            f.hp = Math.max(0, f.hp - def.dmg); f.chipDelay=0.4; f.flash=0.6;
+            emit({ kind:'statusTick', target:f, status:s.key, damage:def.dmg });
+            if(f.hp<=0 && f.alive){ killFighter(f, (f===hero?enemy:hero)); }
+          }
+        }
+      }
+      if(s.dur<=0) f.statuses.splice(i,1);
+    }
+    if(!f.alive) continue;
+    let atbMul = 1;
+    for(const s of f.statuses){ const d=STATUS_DEF[s.key]; if(d.atbMul) atbMul*=d.atbMul; }
+    const busy = actors.some(a=>a.f===f);
+    if(!busy){
+      f.atb += dt * f.speed * 0.55 * ATB_GLOBAL * atbMul;
+      if(f.atb>=1){ f.atb=0; startAction(f); }
+    }
+  }
+  stepActors(dt);
+  stepProjectiles(dt);
+}
+
+function stepActors(dt){
+  for(let i=actors.length-1;i>=0;i--){
+    const a = actors[i]; a.t += dt; const m = a.move;
+    if(a.stage==='windup'){
+      a.f.charge = (m.type==='magic') ? Math.min(1, a.t/m.windUp) : 0;
+      flareMovePixels(a.f, m.kind, 1.0);
+      if(a.t>=m.windUp){ a.stage='release'; a.t=0; a.f.charge=0; releaseMove(a); }
+    } else if(a.stage==='release'){
+      if(a.t>=0.06){ a.stage='recover'; a.t=0; }
+    } else {
+      if(a.t>=m.recover){ actors.splice(i,1); }
+    }
+  }
+}
+
+function releaseMove(a){
+  const { f, tgt, move } = a;
+  for(const p of f.px){ p.vx += f.face*120; }
+  flareMovePixels(f, move.kind, 1.0);
+  if(move.ranged){
+    spawnProjectile(f, tgt, move);
+  } else {
+    resolveHit(f, tgt, move);
+    if(move.double && rnd()<0.85){
+      setTimeout2(0.12, ()=>{ if(tgt.alive && phase==='fight') resolveHit(f, tgt, move); });
+    }
+    meleeImpactFX(f, tgt, move);
+  }
+}
+
+const delayed = [];
+function setTimeout2(sec, fn){ delayed.push({ t:sec, fn }); }
+function stepDelayed(dt){
+  for(let i=delayed.length-1;i>=0;i--){ const d=delayed[i]; d.t-=dt; if(d.t<=0){ d.fn(); delayed.splice(i,1);} }
+}
+
+function spawnProjectile(f, tgt, move){
+  const m = combatCellMul();
+  const sx = creatureScreenX(f) + f.face*22*f.scale;
+  const sy = ground - 3.0*PX*f.scale*m;
+  const ex = creatureScreenX(tgt);
+  const ey = ground - 3.0*PX*tgt.scale*m;
+  const dist = Math.abs(ex-sx);
+  const speed = move.kind==='bow' ? 1300 : (move.kind==='spark'?1700:760);
+  const dur = Math.max(0.04, dist/speed);
+  projectiles.push({
+    move, f, tgt, sx, sy, ex, ey, t:0, dur,
+    arc: move.kind==='bow' ? 90 : (move.kind==='spark'?0:60),
+    school: move.school,
+    bolt: move.kind==='spark' ? makeBolt(sx,sy,ex,ey) : null,
+  });
+  if(move.school) emit({ kind:'cast', source:f, school:move.school });
+}
+function makeBolt(sx,sy,ex,ey){
+  const segs = 9; const main = [];
+  for(let i=0;i<=segs;i++){
+    const u=i/segs;
+    const x=sx+(ex-sx)*u;
+    const y=sy+(ey-sy)*u + (i>0&&i<segs ? (rnd()-0.5)*36 : 0);
+    main.push({x,y});
+  }
+  const forks = [];
+  for(let k=0;k<2;k++){
+    const i = 2 + ((rnd()*(segs-3))|0);
+    const o = main[i];
+    forks.push([ {x:o.x,y:o.y},
+                 {x:o.x+(rnd()-0.5)*40, y:o.y+(rnd()-0.5)*46},
+                 {x:o.x+(rnd()-0.5)*70, y:o.y+(rnd()-0.5)*70} ]);
+  }
+  return { main, forks };
+}
+function stepProjectiles(dt){
+  for(let i=projectiles.length-1;i>=0;i--){
+    const p = projectiles[i]; p.t += dt;
+    const u = p.t/p.dur;
+    if(u>=1){
+      resolveHit(p.f, p.tgt, p.move);
+      projectileImpactFX(p);
+      projectiles.splice(i,1);
+    }
+  }
+}
+
+/* ============================================================================
+   8. LEGIBILITY CORE — pixelsForMove / glyphs / behaviour / flare
+   ========================================================================== */
+function pixelsForMove(px, moveKey, face){
+  const idx = [];
+  const has = t => { for(let i=0;i<px.length;i++) if(px[i].t===t) idx.push(i); };
+  switch(moveKey){
+    case 'sword': has('force'); break;
+    case 'bow':   has('swift'); break;
+    case 'fire':  has('ember'); has('mana'); break;
+    case 'frost': has('frost'); has('mana'); break;
+    case 'spark': has('spark'); has('mana'); break;
+    case 'fist':
+    default: {
+      const f = face || 1;
+      const cand = px.map((p,i)=>({i,p})).sort((a,b)=> (b.p.gx*f) - (a.p.gx*f));
+      let picked=0;
+      for(const c of cand){
+        if(c.p.t==='force' || c.p.t==='vital'){ idx.push(c.i); if(++picked>=2) break; }
+      }
+      if(idx.length===0 && px.length) idx.push(0);
+      break;
+    }
+  }
+  return idx;
+}
+function flareMovePixels(f, moveKey, intensity){
+  const ids = pixelsForMove(f.px, moveKey, f.face);
+  for(const i of ids){ f.px[i].flareTarget = Math.max(f.px[i].flareTarget||0, intensity); }
+}
+function stepFlare(dt){
+  for(const f of fighters){
+    for(const p of f.px){
+      const tgt = p.flareTarget||0;
+      if(tgt>p.flare) p.flare += (tgt-p.flare)*Math.min(1, FLARE_RISE*dt);
+      p.flare = Math.max(0, p.flare - FLARE_FALL*dt);
+      p.flareTarget = 0;
+    }
+  }
+}
+
+function drawGlyph(key, x, y, s, col, alpha){
+  if(s < GLYPH_MIN_CELL){
+    ctx.globalAlpha = alpha*0.9;
+    ctx.fillStyle = col;
+    const r=Math.max(1, s*0.16);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    ctx.globalAlpha = 1; return;
+  }
+  const g = s*GLYPH_SIZE_FRAC*0.5;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = col; ctx.fillStyle = col;
+  ctx.lineWidth = Math.max(1, s*0.10);
+  ctx.lineJoin='round'; ctx.lineCap='round';
+  switch(key){
+    case 'heart':
+      ctx.beginPath();
+      ctx.moveTo(0, g*0.85);
+      ctx.bezierCurveTo(g*1.2, g*0.05, g*0.55,-g*0.95, 0,-g*0.15);
+      ctx.bezierCurveTo(-g*0.55,-g*0.95,-g*1.2, g*0.05, 0, g*0.85);
+      ctx.fill(); break;
+    case 'blade':
+      ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(0,g*0.55); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.55,g*0.18); ctx.lineTo(g*0.55,g*0.18); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(-g*0.22,-g*0.55);
+      ctx.lineTo(g*0.22,-g*0.55); ctx.closePath(); ctx.fill(); break;
+    case 'shield':
+      ctx.beginPath();
+      ctx.moveTo(0,-g); ctx.lineTo(g*0.8,-g*0.6); ctx.lineTo(g*0.8,g*0.25);
+      ctx.quadraticCurveTo(g*0.8,g*0.9, 0,g);
+      ctx.quadraticCurveTo(-g*0.8,g*0.9,-g*0.8,g*0.25);
+      ctx.lineTo(-g*0.8,-g*0.6); ctx.closePath(); ctx.fill(); break;
+    case 'chevron':
+      ctx.beginPath();
+      ctx.moveTo(-g*0.7,-g*0.7); ctx.lineTo(g*0.05,0); ctx.lineTo(-g*0.7,g*0.7); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-g*0.05,-g*0.7); ctx.lineTo(g*0.7,0); ctx.lineTo(-g*0.05,g*0.7); ctx.stroke(); break;
+    case 'diamond':
+      ctx.beginPath();
+      ctx.moveTo(0,-g); ctx.lineTo(g*0.78,0); ctx.lineTo(0,g); ctx.lineTo(-g*0.78,0);
+      ctx.closePath(); ctx.fill(); break;
+    case 'flame':
+      ctx.beginPath();
+      ctx.moveTo(0,g);
+      ctx.bezierCurveTo(g*0.95,g*0.4, g*0.5,-g*0.4, 0,-g);
+      ctx.bezierCurveTo(-g*0.3,-g*0.3,-g*0.85,g*0.2, 0,g);
+      ctx.fill(); break;
+    case 'snow':
+      for(let k=0;k<6;k++){
+        const a=k*Math.PI/3;
+        ctx.beginPath(); ctx.moveTo(0,0);
+        ctx.lineTo(Math.cos(a)*g, Math.sin(a)*g); ctx.stroke();
+        const bx=Math.cos(a)*g*0.6, by=Math.sin(a)*g*0.6;
+        const pa=a+Math.PI/2;
+        ctx.beginPath();
+        ctx.moveTo(bx-Math.cos(pa)*g*0.22, by-Math.sin(pa)*g*0.22);
+        ctx.lineTo(bx+Math.cos(pa)*g*0.22, by+Math.sin(pa)*g*0.22);
+        ctx.stroke();
+      } break;
+    case 'bolt':
+      ctx.beginPath();
+      ctx.moveTo(g*0.3,-g); ctx.lineTo(-g*0.35,g*0.1); ctx.lineTo(g*0.1,g*0.1);
+      ctx.lineTo(-g*0.3,g); ctx.lineTo(g*0.4,-g*0.15); ctx.lineTo(-g*0.05,-g*0.15);
+      ctx.closePath(); ctx.fill(); break;
+    case 'droplet':
+      ctx.beginPath();
+      ctx.moveTo(0,-g);
+      ctx.bezierCurveTo(g*0.75,g*0.05, g*0.55,g, 0,g);
+      ctx.bezierCurveTo(-g*0.55,g,-g*0.75,g*0.05, 0,-g);
+      ctx.fill(); break;
+    case 'ring':
+      ctx.beginPath(); ctx.arc(0,0,g*0.8,0,7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.45,0); ctx.lineTo(g*0.45,0);
+      ctx.moveTo(0,-g*0.45); ctx.lineTo(0,g*0.45); ctx.stroke(); break;
+    case 'star':
+    default:
+      ctx.beginPath();
+      for(let k=0;k<10;k++){
+        const r=(k%2?g*0.45:g);
+        const a=-Math.PI/2 + k*Math.PI/5;
+        const px2=Math.cos(a)*r, py2=Math.sin(a)*r;
+        if(k===0) ctx.moveTo(px2,py2); else ctx.lineTo(px2,py2);
+      }
+      ctx.closePath(); ctx.fill(); break;
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function behaviorMod(type, clock, off){
+  const A = BEHAV_AMP;
+  let bright=0, sx=0, sy=0;
+  switch(type){
+    case 'vital':
+      { const b=Math.pow(Math.max(0,Math.sin(clock*2.2+off)),6);
+        bright=0.10*A*b; sx=sy=0.06*A*b; } break;
+    case 'core':
+      bright=(0.10+0.08*Math.sin(clock*1.6+off))*A; break;
+    case 'ember':
+      bright=(0.12+0.18*Math.abs(Math.sin(clock*9+off)*Math.sin(clock*3.3+off)))*A; break;
+    case 'frost':
+      bright=(0.10+0.10*Math.sin(clock*4+off))*A; sx=0.03*A*Math.sin(clock*7+off); break;
+    case 'spark':
+      { const c=Math.sin(clock*5+off); const flick=(c>0.82)?1:0;
+        bright=(0.08+0.5*flick*(0.5+0.5*Math.sin(clock*60)))*A; } break;
+    case 'mana':
+      bright=(0.10+0.06*Math.sin(clock*1.8+off))*A; break;
+    case 'catalyst':
+      { const p=0.5+0.5*Math.sin(clock*3+off);
+        bright=(0.10+0.16*p)*A; sx=sy=0.05*A*p; } break;
+    case 'plate':
+      bright=0.04*A*Math.sin(clock*1.2+off); break;
+    case 'force':
+      { const g=Math.sin(clock*2.4+off); bright=(g>0.9?0.4:0)*A; } break;
+    case 'focus':
+      bright=(0.06+0.14*Math.pow(Math.max(0,Math.sin(clock*6+off)),8))*A; break;
+    case 'swift':
+      sx=0.04*A*Math.sin(clock*8+off); break;
+  }
+  return {bright, sx, sy};
+}
+
+/* ============================================================================
+   9. RENDER — creature soft-body (LOD-aware), VFX
+   In COMBAT the creature is rendered SMALL: GLYPH_MIN_CELL kicks in and pixels
+   collapse to clean colour blocks (+ causal flare). In the BUILDER preview/
+   combat we share drawCreaturePixels but pass a scaleMul that controls LOD.
+   ========================================================================== */
+let t = 0;
+let shake = 0, hitstop = 0;
+const debris    = [];
+const particles = [];
+const dust      = [];
+const floaters  = [];
+const slashFX   = [];
+const bolts     = [];
+const popups    = [];   // trait activation popups (combat)
+let lightFlash  = 0, lightCol = '#fff';
+
+for(let i=0;i<46;i++){
+  dust.push({ x:rnd()*innerWidth, y:rnd()*innerHeight*0.85,
+    z:0.3+rnd()*0.7, sp:6+rnd()*16, ph:rnd()*7 });
+}
+
+function combatCellMul(){ return COMBAT_CELL_FRAC; }  // shrink combat creatures (LOD)
+function creatureScreenX(f){ return f.homeX + f.face*f.advance + f.knock; }
+function depthScale(f){
+  const back = Math.max(0, f.knock * f.face);
+  return 1 - Math.min(0.20, back*0.0017);
+}
+
+function physStep(dt){
+  for(const f of fighters){
+    for(const p of f.px){
+      const ax = -SPRING_K*p.ox - SPRING_D*p.vx;
+      const ay = -SPRING_K*p.oy - SPRING_D*p.vy;
+      p.vx += ax*dt; p.vy += ay*dt; p.ox += p.vx*dt; p.oy += p.vy*dt;
+    }
+    const ka = -34*f.knock - 7.5*f.knockV;
+    f.knockV += ka*dt; f.knock += f.knockV*dt;
+    const a = actors.find(x=>x.f===f);
+    let want = 0;
+    if(a){
+      if(a.stage==='windup')  want = -0.12;
+      else if(a.stage==='release' && !a.move.ranged) want = 1.0;
+      else if(a.stage==='release') want = 0.15;
+    }
+    const other = (f===hero?enemy:hero);
+    if(other){
+      const reach = (Math.abs(other.homeX - f.homeX) - 3.6*PX);
+      f.advance += (want*reach - f.advance) * Math.min(1, 11*dt);
+    }
+    f.flash  = Math.max(0, f.flash  - dt*7);
+    f.squash = Math.max(0, f.squash - dt*5);
+    f.hpShown += (f.hp - f.hpShown) * Math.min(1, 9*dt);
+    if(f.chipDelay>0) f.chipDelay -= dt;
+    else f.hpChip += (f.hp - f.hpChip) * Math.min(1, 4*dt);
+  }
+  for(let i=debris.length-1;i>=0;i--){ const d=debris[i];
+    d.vy += 980*dt; d.x+=d.vx*dt; d.y+=d.vy*dt; d.life-=dt;
+    if(d.y>ground){ d.y=ground; d.vy*=-0.35; d.vx*=0.6; }
+    if(d.life<=0) debris.splice(i,1);
+  }
+  for(let i=particles.length-1;i>=0;i--){ const p=particles[i];
+    p.vy += (p.grav||0)*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt;
+    p.vx*=Math.pow(p.drag||0.02,dt); p.vy*=Math.pow(p.drag||0.02,dt);
+    if(p.life<=0) particles.splice(i,1);
+  }
+  for(const d of dust){ d.x += d.sp*dt*0.4; d.y -= d.sp*dt*0.12; if(d.x>W+5)d.x=-5; if(d.y<-5)d.y=H*0.85; }
+  for(let i=floaters.length-1;i>=0;i--){ const fl=floaters[i];
+    fl.t+=dt; fl.y -= (fl.vy||32)*dt; fl.vy=(fl.vy||32)*Math.pow(0.05,dt);
+    fl.pop = Math.max(0, (fl.pop||0)-dt*5);
+    if(fl.t>fl.life) floaters.splice(i,1);
+  }
+  for(let i=popups.length-1;i>=0;i--){ const pp=popups[i];
+    pp.t+=dt; pp.y-=26*dt; if(pp.t>=pp.life) popups.splice(i,1);
+  }
+  for(let i=bolts.length-1;i>=0;i--){ bolts[i].t+=dt; if(bolts[i].t>=bolts[i].life) bolts.splice(i,1); }
+  shake *= Math.pow(0.0001, dt);
+  lightFlash = Math.max(0, lightFlash - dt*3.2);
+}
+
+function spark(x,y,n,col,spd){
+  for(let i=0;i<n;i++){ const a=rnd()*6.283;
+    particles.push({ x,y, vx:Math.cos(a)*spd*(0.4+rnd()), vy:Math.sin(a)*spd*(0.4+rnd())-40,
+      life:0.3+rnd()*0.35, col, sz:2+rnd()*3, grav:300, drag:0.02 }); }
+}
+function burst(x,y,n,cols,spd,grav,sz){
+  for(let i=0;i<n;i++){ const a=rnd()*6.283, s=spd*(0.3+rnd());
+    particles.push({ x,y, vx:Math.cos(a)*s, vy:Math.sin(a)*s-20,
+      life:0.4+rnd()*0.6, col:rPick(cols), sz:sz*(0.6+rnd()), grav:grav, drag:0.05 }); }
+}
+function meleeImpactFX(f, tgt, move){
+  const m=combatCellMul();
+  const ix = creatureScreenX(tgt) - f.face*18, iy = ground - 3.0*PX*tgt.scale*m;
+  if(move.kind==='fist'){ spark(ix,iy,6,'#ffffff',180); }
+  else if(move.kind==='sword'){
+    slashFX.push({ x:ix, y:iy, dir:f.face, t:0, life:0.22 });
+    spark(ix,iy,10,'#dfe7ff',260);
+  }
+}
+function projectileImpactFX(p){
+  const ix=p.ex, iy=p.ey;
+  if(p.move.kind==='bow'){
+    spark(ix,iy,9,'#e8d9a0',240);
+    burst(ix,iy,6,['#caa15a','#8a6a30'],120,400,3);
+  } else if(p.school==='fire'){
+    burst(ix,iy,26,['#ff7a2a','#ffd24a','#ff3b1e','#9a2a10'],340,200,4);
+    lightFlash=0.9; lightCol=SCHOOL.fire.light; shake=Math.max(shake,SHAKE_CRIT);
+    triggerZoom(0.10);
+  } else if(p.school==='frost'){
+    burst(ix,iy,24,['#5ad6ff','#bff0ff','#3aa6ff','#dffaff'],280,120,4);
+    for(let i=0;i<8;i++){ const a=-1.2-rnd()*0.7;
+      particles.push({ x:ix,y:iy, vx:Math.cos(a)*(120+rnd()*120)*(rnd()<.5?-1:1),
+        vy:Math.sin(a)*(180+rnd()*160), life:0.5+rnd()*0.4, col:'#bff0ff', sz:2+rnd()*2, grav:500, drag:0.05 }); }
+    lightFlash=0.8; lightCol=SCHOOL.frost.light;
+  } else if(p.school==='spark'){
+    bolts.push({ bolt:p.bolt, t:0, life:0.22 });
+    burst(ix,iy,22,['#c79bff','#ffffff','#9b6bff','#e6d6ff'],300,40,3);
+    for(let i=0;i<10;i++){ const a=rnd()*6.283;
+      particles.push({ x:ix,y:iy, vx:Math.cos(a)*(160+rnd()*200), vy:Math.sin(a)*(160+rnd()*200)-30,
+        life:0.25+rnd()*0.25, col:'#ffffff', sz:1+rnd()*2, grav:0, drag:0.01 }); }
+    lightFlash=1.0; lightCol=SCHOOL.spark.light; shake=Math.max(shake,SHAKE_CRIT*0.8);
+    triggerZoom(0.12);
+  }
+}
+
+/* ---- shared creature renderer (LOD via cell size) ------------------------
+   `lod` true => combat: skip per-pixel glyphs + catalyst link lines once the
+   cell is small; just clean colour blocks + causal flare. This is the
+   builder-detail -> combat-clean transition the director asked for.
+   ------------------------------------------------------------------------- */
+function drawCreaturePixels(f, sx, baseY, scaleMul, breathPhase, inspectType, lod){
+  const s = depthScale(f) * f.scale * scaleMul;
+  const cell = PX*s;
+  const detailed = !lod && cell>=GLYPH_MIN_CELL;
+  const breath=1+0.03*Math.sin(t*2.6+breathPhase);
+  const sq=1 - f.squash*0.18, st=1 + f.squash*0.14;
+
+  if(f.charge>0 && f.chargeSchool){
+    const sc=SCHOOL[f.chargeSchool];
+    const r=(14+f.charge*22)*f.scale;
+    const gg=ctx.createRadialGradient(sx, baseY-3*PX*s, 2, sx, baseY-3*PX*s, r);
+    gg.addColorStop(0, sc.col2); gg.addColorStop(0.5, sc.col); gg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.globalAlpha=0.6*f.charge; ctx.fillStyle=gg;
+    ctx.beginPath(); ctx.arc(sx, baseY-3*PX*s, r, 0, 7); ctx.fill(); ctx.globalAlpha=1;
+  }
+
+  // catalyst link lines — only in detailed (builder) mode
+  if(detailed){
+    for(let i=0;i<f.px.length;i++){
+      const c=f.px[i]; if(c.t!=='catalyst') continue;
+      const cx = sx + (c.gx*PX*sq + c.ox)*s;
+      const cy = baseY - (3.2*PX*s) + ((c.gy*PX)*breath*st + c.oy)*s;
+      const pulse=0.18+0.16*(0.5+0.5*Math.sin(t*3+i));
+      for(let j=0;j<f.px.length;j++){
+        const q=f.px[j]; if(j===i || !PIX[q.t].magic || q.t==='catalyst') continue;
+        if(Math.abs(c.gx-q.gx)>1 || Math.abs(c.gy-q.gy)>1) continue;
+        const qx = sx + (q.gx*PX*sq + q.ox)*s;
+        const qy = baseY - (3.2*PX*s) + ((q.gy*PX)*breath*st + q.oy)*s;
+        ctx.globalAlpha=pulse; ctx.strokeStyle=NEW_PAL.catalyst; ctx.lineWidth=Math.max(1,s*1.2);
+        ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(qx,qy); ctx.stroke();
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+
+  for(let i=0;i<f.px.length;i++){
+    const p=f.px[i];
+    let bx=0,by=0,brBeh=0;
+    const bm=behaviorMod(p.t, t, i*1.7);
+    bx=bm.sx*PX; by=bm.sy*PX; brBeh=bm.bright;
+    const x = sx + (p.gx*PX*sq + p.ox + bx)*s;
+    const y = baseY - (3.2*PX*s) + ((p.gy*PX)*breath*st + p.oy + by)*s;
+
+    const fl = (p.flare||0)*FLARE_INTENSITY;
+    const popScale = 1 + fl*0.5;
+    const w = (PX*s + 0.6) * popScale;
+
+    let cellAlpha = 1;
+    if(detailed && inspectType && p.t!==inspectType) cellAlpha = INSPECT_DIM;
+
+    const base = colorOfType(p.t);
+    let col = base;
+    if(f.flash>0.15) col = '#ffffff';
+    else col = lighten(base, Math.min(0.95, brBeh + fl*0.9));
+
+    ctx.globalAlpha = cellAlpha;
+    ctx.fillStyle = col;
+    ctx.fillRect(x-w/2, y-w/2, w, w);
+    ctx.fillStyle='rgba(255,255,255,0.10)';
+    ctx.fillRect(x-w/2, y-w/2, w, Math.max(1,w*0.18));
+
+    if(detailed && p.t==='plate'){
+      const sweep = ((t*0.5 + i*0.13) % 1);
+      const band = Math.max(0, 1 - Math.abs(sweep-0.5)*5);
+      if(band>0){ ctx.globalAlpha=cellAlpha*0.35*band; ctx.fillStyle='#eef3fb';
+        ctx.fillRect(x-w/2, y-w/2, w*0.5, w); }
+    }
+
+    if(detailed){
+      const meta = PIX[p.t];
+      let gcol = meta.tint;
+      let galpha = cellAlpha * (cell>GLYPH_MIN_CELL ? 0.92 : 1);
+      if(fl>0.25){ gcol = '#ffffff'; galpha = cellAlpha; }
+      drawGlyph(meta.glyph, x, y, w, gcol, galpha);
+    }
+    ctx.globalAlpha = 1;
+
+    if(fl>0.4){
+      ctx.globalAlpha = Math.min(0.7, fl*0.6)*cellAlpha;
+      ctx.strokeStyle = lighten(base, 0.5); ctx.lineWidth=Math.max(1,s*0.8);
+      ctx.strokeRect(x-w/2-2, y-w/2-2, w+4, w+4);
+      ctx.globalAlpha=1;
+    }
+  }
+
+  // status colour overlays (combat) — tray is separate, this is ambient tint
+  if(f.statuses.some(st2=>st2.key==='slow')){
+    ctx.globalAlpha=0.18; ctx.fillStyle='#5ad6ff';
+    ctx.fillRect(sx-30*s, baseY-3.4*PX*s-6, 60*s, 4.2*PX*s+6); ctx.globalAlpha=1;
+  }
+  if(f.statuses.some(st2=>st2.key==='shock')){
+    ctx.globalAlpha=0.13+0.1*Math.abs(Math.sin(t*22)); ctx.fillStyle='#c79bff';
+    ctx.fillRect(sx-30*s, baseY-3.4*PX*s-6, 60*s, 4.2*PX*s+6); ctx.globalAlpha=1;
+  }
+  if(f.statuses.some(st2=>st2.key==='bastion')){
+    // golden-green shield shimmer (positive)
+    ctx.globalAlpha=0.10+0.08*Math.abs(Math.sin(t*5)); ctx.fillStyle='#7CE0A0';
+    ctx.fillRect(sx-32*s, baseY-3.6*PX*s-8, 64*s, 4.6*PX*s+10); ctx.globalAlpha=1;
+  }
+}
+
+const _lc = {};
+function lighten(hex, a){
+  if(a<=0) return hex;
+  const key=hex+'|'+(a.toFixed(2));
+  if(_lc[key]) return _lc[key];
+  const n=parseInt(hex.slice(1),16);
+  let r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  r=Math.round(r+(255-r)*a); g=Math.round(g+(255-g)*a); b=Math.round(b+(255-b)*a);
+  const out='#'+((1<<24)|(r<<16)|(g<<8)|b).toString(16).slice(1);
+  _lc[key]=out; return out;
+}
+
+function drawArena(){
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#141b27'); g.addColorStop(.55,'#10161f'); g.addColorStop(1,'#080b11');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  const hg = ctx.createRadialGradient(W*0.5, ground, 10, W*0.5, ground, W*0.7);
+  hg.addColorStop(0,'rgba(60,90,140,0.18)'); hg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=hg; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='rgba(120,150,190,0.10)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,ground); ctx.lineTo(W,ground); ctx.stroke();
+  ctx.fillStyle='#161d2a';
+  ctx.beginPath();
+  ctx.moveTo(W*0.5-60, ground); ctx.lineTo(W*0.5+60, ground);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+  for(const d of dust){
+    ctx.globalAlpha=0.10+0.18*d.z;
+    ctx.fillStyle='#bcd0ee';
+    const sdz=1+d.z*2; ctx.fillRect(d.x, d.y, sdz, sdz);
+  }
+  ctx.globalAlpha=1;
+}
+function drawShadow(f){
+  const s=depthScale(f)*f.scale*combatCellMul(), sx=creatureScreenX(f);
+  ctx.fillStyle='rgba(0,0,0,0.38)';
+  ctx.beginPath(); ctx.ellipse(sx, ground+3, 36*s, 9*s, 0,0,7); ctx.fill();
+}
+function drawCreature(f){
+  if(!f.alive) return;
+  const sx=creatureScreenX(f);
+  const lift=(1-depthScale(f))*120;
+  const baseY=ground-lift;
+  drawCreaturePixels(f, sx, baseY, combatCellMul(), (f.face>0?1.5:0), null, true);
+}
+
+function drawProjectiles(){
+  for(const p of projectiles){
+    if(p.move.kind==='spark') continue;
+    const u=p.t/p.dur;
+    const x=p.sx+(p.ex-p.sx)*u;
+    const y=p.sy+(p.ey-p.sy)*u - Math.sin(u*Math.PI)*p.arc;
+    const ang=Math.atan2((p.ey-p.sy) - Math.cos(u*Math.PI)*p.arc*Math.PI, (p.ex-p.sx));
+    ctx.save(); ctx.translate(x,y); ctx.rotate(ang);
+    if(p.move.kind==='bow'){
+      ctx.strokeStyle='rgba(230,210,150,0.4)'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(-26,0); ctx.lineTo(0,0); ctx.stroke();
+      ctx.strokeStyle='#caa15a'; ctx.lineWidth=2.5;
+      ctx.beginPath(); ctx.moveTo(-14,0); ctx.lineTo(8,0); ctx.stroke();
+      ctx.fillStyle='#e8d9a0'; ctx.beginPath();
+      ctx.moveTo(8,0); ctx.lineTo(2,-3); ctx.lineTo(2,3); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle='#caa15a'; ctx.beginPath(); ctx.moveTo(-14,0); ctx.lineTo(-18,-3);
+      ctx.moveTo(-14,0); ctx.lineTo(-18,3); ctx.stroke();
+    } else {
+      const sc=SCHOOL[p.school];
+      const gg=ctx.createRadialGradient(0,0,1,0,0,16);
+      gg.addColorStop(0,sc.col2); gg.addColorStop(0.5,sc.col); gg.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(0,0,16,0,7); ctx.fill();
+      ctx.fillStyle=sc.col2; ctx.beginPath(); ctx.arc(0,0,4,0,7); ctx.fill();
+      if(rnd()<0.8) particles.push({ x, y, vx:(rnd()-.5)*40, vy:(rnd()-.5)*40,
+        life:0.3, col:sc.col, sz:2+rnd()*2, grav:p.school==='fire'?-120:60, drag:0.1 });
+      ctx.restore();
+      continue;
+    }
+    ctx.restore();
+  }
+}
+function drawBolts(){
+  for(const b of bolts){
+    const a = 1 - b.t/b.life;
+    const flick = 0.6+0.4*Math.abs(Math.sin(b.t*60));
+    ctx.globalAlpha = a*flick;
+    ctx.strokeStyle='rgba(199,155,255,0.5)'; ctx.lineWidth=7; ctx.lineJoin='round';
+    strokePath(b.bolt.main);
+    for(const fk of b.bolt.forks) strokePath(fk);
+    ctx.strokeStyle='#ffffff'; ctx.lineWidth=2.4;
+    strokePath(b.bolt.main);
+    ctx.strokeStyle='#e6d6ff'; ctx.lineWidth=1.4;
+    for(const fk of b.bolt.forks) strokePath(fk);
+    ctx.globalAlpha=1;
+  }
+}
+function strokePath(pts){
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
+}
+function drawSlashFX(rdt){
+  for(let i=slashFX.length-1;i>=0;i--){
+    const sFx=slashFX[i]; sFx.t+=rdt;
+    const u=sFx.t/sFx.life; if(u>=1){ slashFX.splice(i,1); continue; }
+    ctx.save(); ctx.translate(sFx.x, sFx.y);
+    ctx.globalAlpha=(1-u)*0.95; ctx.strokeStyle='#eaf0ff'; ctx.lineWidth=6-u*4;
+    ctx.beginPath();
+    const a0=(-1.1)*sFx.dir, a1=(1.1)*sFx.dir;
+    ctx.arc(0,0, 30, a0+u*0.6, a1+u*0.6, sFx.dir<0); ctx.stroke();
+    ctx.restore(); ctx.globalAlpha=1;
+  }
+}
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=Math.min(1, p.life*3);
+    ctx.fillStyle=p.col;
+    ctx.fillRect(p.x-p.sz/2, p.y-p.sz/2, p.sz, p.sz);
+  }
+  ctx.globalAlpha=1;
+  for(const d of debris){
+    ctx.globalAlpha=Math.min(1,d.life*2);
+    ctx.fillStyle = d.t ? colorOfType(d.t) : d.c;
+    const s=d.sz||PX*0.8; ctx.fillRect(d.x-s/2, d.y-s/2, s, s);
+  }
+  ctx.globalAlpha=1;
+}
+
+/* ============================================================================
+   10. BUILDER MODE — grid, palette, bonds, shapes, panels, LOD
+   ----------------------------------------------------------------------------
+   The build is an array of {gx,gy,type}. Grid centred on the core at (0,0).
+   Live: every edit recomputes traits + stats + moveset + shape flashes.
+   ========================================================================== */
+let APP = 'builder';            // 'builder' | 'combat'
+let build = HERO_BUILD.map(p=>({...p}));   // current editable build (clone)
+let selectedType = 'force';     // currently-selected palette type
+let showAllBonds = false;       // «всі звʼязки» toggle
+let builderZoom = 1.0;          // LOD slider: scales BUILD_CELL
+let derived = null;             // cached deriveStats(build)
+let traitsCache = [];           // cached traits
+let hoverCell = null;           // {gx,gy} grid cell under mouse
+let hoverPixIdx = -1;           // index of pixel under mouse (or -1)
+const shapeFlash = {};          // key -> {t} for newly-completed shape flash
+let prevShapeKeys = new Set();
+
+// builder grid screen geometry (left area; panels on the right)
+function builderGeom(){
+  const cell = BUILD_CELL*builderZoom;
+  const panelW = 330;                 // right panel reserve
+  const areaW = W - panelW;
+  const cx = areaW*0.5;               // grid centre x (screen)
+  const cy = H*0.52;                  // grid centre y (screen)
+  return { cell, cx, cy, panelW, areaW };
+}
+function gridToScreen(gx, gy){
+  const { cell, cx, cy } = builderGeom();
+  return { x: cx + gx*cell, y: cy + gy*cell };
+}
+function screenToGrid(mx, my){
+  const { cell, cx, cy } = builderGeom();
+  return { gx: Math.round((mx-cx)/cell), gy: Math.round((my-cy)/cell) };
+}
+
+function recompute(){
+  derived = deriveStats(build);
+  traitsCache = derived.traits;
+  // shape-completion flash: any shape key newly present this frame
+  const shapeKeys = new Set(traitsCache.filter(tr=>tr.kind==='shape').map(tr=>tr.key));
+  for(const k of shapeKeys){ if(!prevShapeKeys.has(k)) shapeFlash[k]={t:0}; }
+  prevShapeKeys = shapeKeys;
+}
+recompute();
+
+// connectivity: orthogonal flood fill from the core; returns Set of indices reachable
+function connectedSet(arr){
+  const byCell=new Map(); arr.forEach((p,i)=>byCell.set(p.gx+','+p.gy,i));
+  const coreI = arr.findIndex(p=>p.type==='core');
+  if(coreI<0) return new Set();
+  const seen=new Set([coreI]); const stack=[coreI];
+  while(stack.length){
+    const i=stack.pop(); const p=arr[i];
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const j=byCell.get((p.gx+dx)+','+(p.gy+dy));
+      if(j!==undefined && !seen.has(j)){ seen.add(j); stack.push(j); }
+    }
+  }
+  return seen;
+}
+function cellOccupied(gx,gy){ return build.some(p=>p.gx===gx&&p.gy===gy); }
+function orthAdjToBody(gx,gy){
+  return build.some(p=> (Math.abs(p.gx-gx)+Math.abs(p.gy-gy))===1 );
+}
+
+function placePixel(gx,gy){
+  if(cellOccupied(gx,gy)) return;
+  if(!orthAdjToBody(gx,gy)) return;            // must touch existing body
+  if(Math.abs(gx)>(GRID_N>>1) || Math.abs(gy)>(GRID_N>>1)) return; // stay in grid
+  build.push({ gx, gy, type:selectedType });
+  recompute();
+}
+function removePixel(idx){
+  const p=build[idx];
+  if(p.type==='core') return;                  // never remove the core
+  // disallow if removal would orphan/disconnect remaining pixels
+  const trial = build.slice(0,idx).concat(build.slice(idx+1));
+  const reach = connectedSet(trial);
+  if(reach.size !== trial.length) return;      // would disconnect -> disallow
+  build.splice(idx,1);
+  recompute();
+}
+
+function loadPreset(key){
+  build = PRESETS[key].build.map(p=>({...p}));
+  prevShapeKeys = new Set();   // re-flash shapes on load
+  recompute();
+}
+
+// ---- bond list (screen-space) for the active synergies --------------------
+// returns [{i,j,key,name,x1,y1,x2,y2}]
+function bondSegments(){
+  const out=[];
+  for(const tr of traitsCache){
+    if(tr.kind!=='adjacency' || !tr.bonds) continue;
+    for(const [i,j] of tr.bonds){
+      const a=build[i], b=build[j];
+      const sa=gridToScreen(a.gx,a.gy), sb=gridToScreen(b.gx,b.gy);
+      out.push({ i, j, key:tr.key, name:tr.name, x1:sa.x, y1:sa.y, x2:sb.x, y2:sb.y });
+    }
+  }
+  return out;
+}
+
+function drawBuilderGrid(){
+  const { cell, cx, cy, panelW, areaW } = builderGeom();
+  const half = GRID_N>>1;
+  // faint grid
+  ctx.strokeStyle='rgba(90,120,170,0.10)'; ctx.lineWidth=1;
+  for(let g=-half; g<=half; g++){
+    const a=gridToScreen(-half,g), b=gridToScreen(half,g);
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    const c=gridToScreen(g,-half), d=gridToScreen(g,half);
+    ctx.beginPath(); ctx.moveTo(c.x,c.y); ctx.lineTo(d.x,d.y); ctx.stroke();
+  }
+
+  // placement-candidate highlight (empty cells orthogonally adjacent to body)
+  if(hoverCell){
+    const {gx,gy}=hoverCell;
+    const occ=cellOccupied(gx,gy);
+    if(!occ && orthAdjToBody(gx,gy) && Math.abs(gx)<=half && Math.abs(gy)<=half){
+      const s=gridToScreen(gx,gy);
+      ctx.globalAlpha=0.25+0.1*Math.sin(t*6); ctx.fillStyle=colorOfType(selectedType);
+      ctx.fillRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
+      ctx.globalAlpha=1;
+      ctx.strokeStyle=colorOfType(selectedType); ctx.lineWidth=2;
+      ctx.strokeRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
+    }
+  }
+
+  // ---- SHAPE highlights (outline matched sets + soft pulse) ----------------
+  drawShapeHighlights();
+
+  // ---- BOND lines (CONTEXTUAL): by default only for hovered pixel/type -----
+  if(cell>=LOD_BOND_MINCELL){
+    const segs=bondSegments();
+    let hoverType = (hoverPixIdx>=0) ? build[hoverPixIdx].type : null;
+    for(const sg of segs){
+      let show = showAllBonds;
+      if(!show && hoverPixIdx>=0){
+        // show bonds touching the hovered pixel, or sharing its type
+        show = (sg.i===hoverPixIdx || sg.j===hoverPixIdx)
+            || build[sg.i].type===hoverType || build[sg.j].type===hoverType;
+      }
+      if(!show) continue;
+      drawBond(sg);
+    }
+  }
+
+  // ---- PIXELS (builder = full detail; big glyphs) --------------------------
+  const half2=half;
+  // build a transient fighter-like wrapper so we can reuse glyph/behavior look
+  for(let i=0;i<build.length;i++){
+    const p=build[i];
+    const s=gridToScreen(p.gx,p.gy);
+    const bm=behaviorMod(p.type, t, i*1.7);
+    const w=cell-2;
+    const base=colorOfType(p.type);
+    const dim = (hoverPixIdx>=0 && hoverType_() && p.type!==hoverType_()) ? INSPECT_DIM : 1;
+    ctx.globalAlpha=dim;
+    ctx.fillStyle = lighten(base, Math.min(0.6, bm.bright));
+    ctx.fillRect(s.x-w/2, s.y-w/2, w, w);
+    ctx.fillStyle='rgba(255,255,255,0.10)';
+    ctx.fillRect(s.x-w/2, s.y-w/2, w, Math.max(1,w*0.18));
+    // glyph (LOD: only if cell big enough)
+    if(cell>=GLYPH_MIN_CELL){
+      drawGlyph(PIX[p.type].glyph, s.x, s.y, w, PIX[p.type].tint, dim*0.95);
+    }
+    // core ring
+    if(p.type==='core'){
+      ctx.globalAlpha=dim; ctx.strokeStyle='#fff3c0'; ctx.lineWidth=2;
+      ctx.strokeRect(s.x-w/2, s.y-w/2, w, w);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // hovered pixel ring + remove hint
+  if(hoverPixIdx>=0){
+    const p=build[hoverPixIdx]; const s=gridToScreen(p.gx,p.gy);
+    ctx.strokeStyle = p.type==='core' ? '#888' : '#ff6b6b';
+    ctx.lineWidth=2; ctx.strokeRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
+  }
+
+  // title + grid legend
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6';
+  ctx.fillText('БІЛДЕР — клік: поставити суміжно · клік по пікселю: прибрати', 16, 24);
+  ctx.font='11px system-ui'; ctx.fillStyle='#7e90ac';
+  ctx.fillText('пікселів: '+build.length+'    масштаб(LOD): '+(builderZoom).toFixed(2)+'×  [ та ]', 16, 42);
+}
+function hoverType_(){ return hoverPixIdx>=0 ? build[hoverPixIdx].type : null; }
+
+function drawBond(sg){
+  const col=traitColor(sg.key);
+  // glowing link
+  ctx.lineCap='round';
+  ctx.globalAlpha=0.35*BOND_GLOW; ctx.strokeStyle=col; ctx.lineWidth=BOND_WIDTH*builderZoom+4;
+  ctx.beginPath(); ctx.moveTo(sg.x1,sg.y1); ctx.lineTo(sg.x2,sg.y2); ctx.stroke();
+  ctx.globalAlpha=0.95; ctx.strokeStyle=lighten(col,0.4); ctx.lineWidth=BOND_WIDTH*builderZoom;
+  ctx.beginPath(); ctx.moveTo(sg.x1,sg.y1); ctx.lineTo(sg.x2,sg.y2); ctx.stroke();
+  ctx.globalAlpha=1;
+  // tiny synergy badge at midpoint
+  const mx=(sg.x1+sg.x2)/2, my=(sg.y1+sg.y2)/2;
+  const r=8*builderZoom+3;
+  ctx.fillStyle='rgba(10,14,22,0.9)';
+  ctx.beginPath(); ctx.arc(mx,my,r,0,7); ctx.fill();
+  ctx.strokeStyle=col; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(mx,my,r,0,7); ctx.stroke();
+  drawTraitIcon(sg.key, mx, my, r*1.7, lighten(col,0.3));
+}
+
+function drawShapeHighlights(){
+  const { cell } = builderGeom();
+  for(const tr of traitsCache){
+    if(tr.kind!=='shape' || !tr.sets) continue;
+    const col=traitColor(tr.icon)||traitColor(tr.key);
+    const pulse=0.4+0.3*Math.sin(t*4)*SHAPE_PULSE;
+    for(const set of tr.sets){
+      // outline bounding cells of the set
+      ctx.globalAlpha=0.18+0.12*Math.max(0,Math.sin(t*3));
+      ctx.fillStyle=col;
+      for(const idx of set){
+        const p=build[idx]; const s=gridToScreen(p.gx,p.gy);
+        ctx.fillRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
+      }
+      ctx.globalAlpha=Math.min(0.9,0.5+pulse);
+      ctx.strokeStyle=lighten(col,0.3); ctx.lineWidth=2;
+      for(const idx of set){
+        const p=build[idx]; const s=gridToScreen(p.gx,p.gy);
+        ctx.strokeRect(s.x-cell/2+1, s.y-cell/2+1, cell-4, cell-4);
+      }
+      ctx.globalAlpha=1;
+    }
+    // completion flash: float the trait name once over the set centroid
+    const fl=shapeFlash[tr.key];
+    if(fl){
+      fl.t += 1/60;
+      const set=tr.sets[0];
+      let mx=0,my=0; for(const idx of set){ const s=gridToScreen(build[idx].gx,build[idx].gy); mx+=s.x; my+=s.y; }
+      mx/=set.length; my/=set.length;
+      const u=fl.t/SHAPE_FLASH_DUR;
+      if(u<1){
+        ctx.globalAlpha=Math.min(1,(1-u)*2);
+        ctx.font='bold 18px system-ui'; ctx.textAlign='center';
+        ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.7)';
+        ctx.strokeText(tr.name+'!', mx, my-30-u*24);
+        ctx.fillStyle=lighten(col,0.4); ctx.fillText(tr.name+'!', mx, my-30-u*24);
+        ctx.globalAlpha=1; ctx.textAlign='left';
+      } else { delete shapeFlash[tr.key]; }
+    }
+  }
+}
+
+// ---- TYPE PALETTE (left/bottom strip, selectable) -------------------------
+function paletteGeom(){
+  const sw=44, gap=8, n=TYPE_ORDER.length;
+  const totalW=n*sw+(n-1)*gap;
+  const { areaW } = builderGeom();
+  const x0=Math.max(16, (areaW-totalW)/2);
+  const y0=H-72;
+  return { sw, gap, n, x0, y0, totalW };
+}
+function drawPalette(){
+  const { sw, gap, x0, y0 } = paletteGeom();
+  ctx.fillStyle='rgba(8,12,20,0.55)';
+  ctx.fillRect(x0-10, y0-26, TYPE_ORDER.length*(sw+gap)+8, sw+44);
+  ctx.font='bold 11px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
+  ctx.fillText('ПАЛІТРА — обери тип пікселя', x0, y0-12);
+  for(let i=0;i<TYPE_ORDER.length;i++){
+    const tk=TYPE_ORDER[i], meta=PIX[tk];
+    const x=x0+i*(sw+gap), y=y0;
+    const sel=(tk===selectedType);
+    ctx.fillStyle=colorOfType(tk);
+    ctx.fillRect(x,y,sw,sw);
+    if(sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=3; ctx.strokeRect(x-1,y-1,sw+2,sw+2); }
+    else { ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1; ctx.strokeRect(x,y,sw,sw); }
+    drawGlyph(meta.glyph, x+sw/2, y+sw/2-3, sw, meta.tint, 0.95);
+    ctx.font='9px system-ui'; ctx.fillStyle=sel?'#fff':'#aab6c6'; ctx.textAlign='center';
+    ctx.fillText(meta.name, x+sw/2, y+sw-3);
+    ctx.textAlign='left';
+  }
+}
+function paletteHit(mx,my){
+  const { sw, gap, x0, y0 } = paletteGeom();
+  for(let i=0;i<TYPE_ORDER.length;i++){
+    const x=x0+i*(sw+gap), y=y0;
+    if(mx>=x&&mx<=x+sw&&my>=y&&my<=y+sw) return TYPE_ORDER[i];
+  }
+  return null;
+}
+
+// ---- PRESET BUTTONS (top-left under title) --------------------------------
+const presetButtons = [];
+function layoutPresetButtons(){
+  presetButtons.length=0;
+  const keys=Object.keys(PRESETS);
+  let x=16, y=56;
+  ctx.font='bold 12px system-ui';
+  for(const k of keys){
+    const label=PRESETS[k].name;
+    const w=ctx.measureText(label).width+22;
+    presetButtons.push({ k, x, y, w, h:26, label });
+    x+=w+8;
+  }
+}
+function drawPresetButtons(){
+  layoutPresetButtons();
+  ctx.font='bold 12px system-ui'; ctx.textBaseline='middle';
+  for(const b of presetButtons){
+    ctx.fillStyle='rgba(22,32,58,0.9)'; ctx.fillRect(b.x,b.y,b.w,b.h);
+    ctx.strokeStyle='#38507e'; ctx.lineWidth=1; ctx.strokeRect(b.x,b.y,b.w,b.h);
+    ctx.fillStyle='#dfe8ff'; ctx.textAlign='left';
+    ctx.fillText(b.label, b.x+10, b.y+b.h/2+1);
+  }
+  ctx.textBaseline='alphabetic';
+}
+function presetHit(mx,my){
+  for(const b of presetButtons){
+    if(mx>=b.x&&mx<=b.x+b.w&&my>=b.y&&my<=b.y+b.h) return b.k;
+  }
+  return null;
+}
+
+// ---- RIGHT PANELS: traits + stats + moveset -------------------------------
+function drawTraitsPanel(){
+  const { panelW } = builderGeom();
+  const x=W-panelW+14, w=panelW-28;
+  let y=70;
+  ctx.fillStyle='rgba(8,12,20,0.6)'; ctx.fillRect(x-8, y-26, w+16, 250);
+  ctx.strokeStyle='rgba(90,120,170,0.25)'; ctx.lineWidth=1; ctx.strokeRect(x-8, y-26, w+16, 250);
+  ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
+  ctx.fillText('АКТИВНІ ТРЕЙТИ (синергії + форми)', x, y-10);
+  ctx.textBaseline='middle';
+  if(traitsCache.length===0){
+    ctx.font='12px system-ui'; ctx.fillStyle='#6f7e94';
+    ctx.fillText('— ще немає. Спробуй пресет «Титан».', x, y+10);
+  }
+  const rowH=34;
+  for(let i=0;i<traitsCache.length;i++){
+    const tr=traitsCache[i]; const ry=y+i*rowH+8;
+    if(ry>y+250-40) { ctx.fillStyle='#7e90ac'; ctx.font='11px system-ui'; ctx.fillText('+ще '+(traitsCache.length-i), x, ry+6); break; }
+    const col=traitColor(tr.icon)||traitColor(tr.key);
+    // icon chip
+    ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fillRect(x, ry, 26, 26);
+    ctx.strokeStyle=col; ctx.lineWidth=1.5; ctx.strokeRect(x, ry, 26, 26);
+    drawTraitIcon(tr.icon, x+13, ry+13, 24, col);
+    // name + magnitude + effect
+    ctx.font='bold 12px system-ui'; ctx.fillStyle='#eaf0fb';
+    const tag = tr.kind==='adjacency' ? ('×'+tr.magnitude+' пар') : ('×'+tr.magnitude);
+    ctx.fillText(tr.name+'  '+tag, x+34, ry+8);
+    ctx.font='10px system-ui'; ctx.fillStyle='#9fb0c8';
+    const delta = derived.traitDelta[tr.key] ? ('['+derived.traitDelta[tr.key]+']  ') : '';
+    ctx.fillText(delta+tr.effect, x+34, ry+20);
+  }
+  ctx.textBaseline='alphabetic';
+}
+
+function drawStatsPanel(){
+  const { panelW } = builderGeom();
+  const x=W-panelW+14, w=panelW-28;
+  let y=345;
+  ctx.fillStyle='rgba(8,12,20,0.6)'; ctx.fillRect(x-8, y-26, w+16, 232);
+  ctx.strokeStyle='rgba(90,120,170,0.25)'; ctx.lineWidth=1; ctx.strokeRect(x-8, y-26, w+16, 232);
+  ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
+  ctx.fillText('СТАТИ (з урахуванням трейтів)', x, y-10);
+  const s=derived;
+  const rows=[
+    ['HP', Math.round(s.maxHP), '#56d364'],
+    ['Броня', s.armor.toFixed(1), '#9fb0c8'],
+    ['Атака', s.atk.toFixed(1), '#E0483F'],
+    ['Ухил', (s.dodge*100).toFixed(0)+'%', '#F0C020'],
+    ['Крит', (s.crit*100).toFixed(0)+'%', '#EAEFF5'],
+    ['Точність', (s.acc*100).toFixed(0)+'%', '#cfe0ff'],
+    ['Швидкість', s.speed.toFixed(2), '#7fc8ff'],
+    ['Магія', s.magic.toFixed(0), '#D14FA6'],
+    ['Блок', (s.blockChance*100).toFixed(0)+'%', '#7CE0A0'],
+    ['Регенерація', s.regenPerSec.toFixed(1)+'/с', '#5BE08A'],
+  ];
+  ctx.font='12px system-ui'; ctx.textBaseline='middle';
+  for(let i=0;i<rows.length;i++){
+    const [k,v,col]=rows[i];
+    const ry=y+ (i%5)*30 + 10;
+    const colX = x + (i<5?0:w/2);
+    ctx.fillStyle='#9fb0c8'; ctx.fillText(k, colX, ry);
+    ctx.fillStyle=col; ctx.font='bold 13px system-ui';
+    ctx.fillText(''+v, colX+96, ry);
+    ctx.font='12px system-ui';
+  }
+  // moveset icon row
+  const moves=deriveMoveset(build);
+  const my=y+178;
+  ctx.font='bold 11px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textBaseline='alphabetic';
+  ctx.fillText('РУХИ (відкриті білдом):', x, my-6);
+  ctx.font='22px system-ui'; let ix=x;
+  for(const k of moves){ ctx.fillText(MOVES[k].icon, ix, my+22); ix+=34; }
+  if(moves.length===0){ ctx.font='12px system-ui'; ctx.fillStyle='#6f7e94'; ctx.fillText('— лише кулак', x, my+20); }
+}
+
+// ---- INSPECT tooltip for hovered pixel (builder) --------------------------
+function drawBuilderTooltip(){
+  if(hoverPixIdx<0) return;
+  const p=build[hoverPixIdx]; const meta=PIX[p.type];
+  // which traits include this pixel?
+  const inTraits=traitsCache.filter(tr=>tr.pixelIndices.includes(hoverPixIdx));
+  const lines=[meta.name+' — '+meta.eff];
+  for(const tr of inTraits) lines.push('• '+tr.name+' ('+(tr.kind==='adjacency'?'синергія':'форма')+')');
+  ctx.font='bold 13px system-ui';
+  let wmax=0; for(const l of lines) wmax=Math.max(wmax, ctx.measureText(l).width);
+  const w=wmax+50, h=20+lines.length*18+8;
+  let x=mouseX+16, y=mouseY-h-10;
+  if(x+w>W) x=mouseX-w-16; if(y<4) y=mouseY+16;
+  ctx.fillStyle='rgba(10,14,22,0.94)'; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle=colorOfType(p.type); ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle=colorOfType(p.type); ctx.fillRect(x+8,y+8,30,30);
+  drawGlyph(meta.glyph, x+8+15, y+8+15, 30, meta.tint, 1);
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 13px system-ui'; ctx.fillStyle='#fff';
+  ctx.fillText(lines[0], x+46, y+22);
+  ctx.font='11px system-ui'; ctx.fillStyle='#bcd0ee';
+  for(let i=1;i<lines.length;i++) ctx.fillText(lines[i], x+12, y+22+i*18);
+}
+
+function drawBuilder(){
+  drawArena();
+  drawBuilderGrid();
+  drawPalette();
+  drawPresetButtons();
+  drawTraitsPanel();
+  drawStatsPanel();
+  drawBuilderTooltip();
+}
+
+/* ============================================================================
+   11. COMBAT MODE — clean render + activation popups + buff/debuff tray
+   ========================================================================== */
+let foeIdx = 0;
+function startCombat(){
+  APP='combat';
+  phase='fight'; winner=null;
+  rng = mulberry32(SEED_BASE + foeIdx*101 + 7);
+  hero = makeFighter(build.map(p=>({...p})), { id:'hero', name:'«Твій Герой»', side:-1, scale:1.0, accent:'#add0ff' });
+  const fe = ROSTER[FOE_ORDER[foeIdx]];
+  enemy = makeFighter(fe.build, { id:fe.id, name:fe.name, arch:fe.arch, side:+1, scale:fe.scale, accent:fe.accent });
+  hero.homeX=W*0.34; enemy.homeX=W*0.66;
+  fighters=[hero,enemy];
+  actors.length=0; projectiles.length=0; delayed.length=0;
+  particles.length=0; debris.length=0; floaters.length=0; bolts.length=0; slashFX.length=0; popups.length=0;
+  log.length=0;
+  pushLog(`Бій: ${hero.name} проти ${enemy.name}`, '#9fb0c8');
+  hero.atb=0.12; enemy.atb=0.0;
+}
+let resultT=0, resultText='', resultCol='#ffe24a';
+function startResult(){
+  phase='result'; resultT=RESULT_DUR;
+  const heroWon = winner===hero;
+  resultText = heroWon ? `${hero.name} переміг!` : `${enemy.name} переміг!`;
+  resultCol = heroWon ? '#7fd0ff' : enemy.accent;
+}
+function nextFoe(){
+  foeIdx=(foeIdx+1)%FOE_ORDER.length;
+  startCombat();
+}
+
+const log = [];
+function pushLog(text, col){ log.push({text, col:col||'#dfe6f0'}); if(log.length>7) log.shift(); }
+function addFloater(f, text, col, big){
+  floaters.push({ x:creatureScreenX(f), y:ground-3.6*PX*f.scale*combatCellMul()-18, t:0, life: big?1.3:0.95,
+    text, col, big:!!big, vy: big?20:34, pop: big?1:0.4 });
+}
+
+// trait activation popup near a fighter
+function addPopup(f, traitKey){
+  const name = popupNameForTrait(traitKey);
+  popups.push({ x:creatureScreenX(f), y:ground-3.8*PX*f.scale*combatCellMul()-30, t:0, life:1.2,
+    key:traitKey, name, col:traitColor(traitKey) });
+  // a little flourish
+  const x=creatureScreenX(f), y=ground-3.0*PX*f.scale*combatCellMul();
+  burst(x,y,10,[traitColor(traitKey),'#ffffff'],120,-40,3);
+}
+function popupNameForTrait(k){
+  switch(k){
+    case 'blade': return '«Лезо» КРИТ!';
+    case 'bastion': return '«Бастіон» БЛОК!';
+    case 'heart': return '«Серце» +рег';
+    case 'kindle': return '«Розпал» +маг';
+    case 'flow': return '«Потік» ухил!';
+    default: return '«'+k+'»';
+  }
+}
+
+function consumeEvents(){
+  while(events.length){
+    const e = events.shift();
+    if(e.kind==='telegraph'){ }
+    else if(e.kind==='traitProc'){ addPopup(e.f, e.trait); }
+    else if(e.kind==='block'){
+      addFloater(e.target, 'БЛОК', '#7CE0A0', false);
+      pushLog(`${e.target.name}: «Бастіон» заблокував удар`, '#7CE0A0');
+      const x=creatureScreenX(e.target), y=ground-3*PX*e.target.scale*combatCellMul();
+      // shield-ring flash
+      for(let i=0;i<10;i++){ const a=rnd()*6.283;
+        particles.push({ x,y, vx:Math.cos(a)*120, vy:Math.sin(a)*120-30, life:0.4, col:'#7CE0A0', sz:2+rnd()*2, grav:60, drag:0.05 }); }
+      lightFlash=Math.max(lightFlash,0.3); lightCol='#7CE0A0';
+    }
+    else if(e.kind==='regen'){
+      addFloater(e.f, '+'+e.heal, '#5BE08A', false);
+    }
+    else if(e.kind==='cast'){
+      const sc = SCHOOL[e.school];
+      lightFlash=Math.max(lightFlash,0.5); lightCol=sc.light;
+      const x=creatureScreenX(e.source), y=ground-3.0*PX*e.source.scale*combatCellMul();
+      burst(x,y,10,[sc.col,sc.col2],90,-20,3);
+    }
+    else if(e.kind==='resolve'){
+      const s=e.source, tg=e.target, m=e.move;
+      if(e.dodge){
+        addFloater(tg, rnd()<0.5?'УХИЛ':'ПРОМАХ', '#9aa6b4', false);
+        pushLog(`${tg.name} ${rnd()<0.5?'ухилився':'уник удару'}`, '#9aa6b4');
+        spark(creatureScreenX(tg), ground-3*PX*tg.scale*combatCellMul(), 4, '#7e8a99', 90);
+      } else {
+        if(e.crit){
+          addFloater(tg, e.damage+'', '#ffe24a', true);
+          triggerSlowmo(SLOWMO_CRIT, 0.55); triggerZoom(ZOOM_PUNCH);
+          shake=Math.max(shake,SHAKE_CRIT); hitstop=Math.max(hitstop,HITSTOP_HIT*2.2);
+        } else {
+          addFloater(tg, e.damage+'', e.shockAmp?'#e6d6ff':'#ffffff', false);
+          shake=Math.max(shake, SHAKE_BASE*Math.min(2, e.damage/14));
+          hitstop=Math.max(hitstop, HITSTOP_HIT*Math.min(2.2, 0.7+e.damage/26));
+        }
+        let line = `${s.name} ${m.label}`;
+        if(m.school) line += ` [${SCHOOL[m.school].name}]`;
+        line += ` — ${e.damage}`;
+        if(e.crit) line += ' (КРИТ!)';
+        if(e.shockAmp) line += ' ⚡(Шок!)';
+        if(e.status) line += `, накладено ${STATUS_DEF[e.status].uk}`;
+        pushLog(line, e.crit ? '#ffe24a' : (m.school?SCHOOL[m.school].col:'#dfe6f0'));
+        const dir = Math.sign(tg.homeX - s.homeX) || 1;
+        tg.knockV += dir*(e.crit?620:380)/Math.max(0.7,tg.scale*0.7);
+        for(const p of tg.px){ p.vx += dir*(180+e.damage*6)+(rnd()-.5)*120; p.vy+=(rnd()-.7)*150; }
+      }
+    }
+    else if(e.kind==='statusTick'){
+      const def=STATUS_DEF[e.status];
+      addFloater(e.target, e.damage+'', def.col, false);
+      pushLog(`${e.target.name} ${e.status==='burn'?'горить':'страждає'} — ${e.damage}`, def.col);
+      const x=creatureScreenX(e.target), y=ground-2.4*PX*e.target.scale*combatCellMul();
+      if(e.status==='burn') burst(x,y,8,['#ff7a2a','#ffd24a'],80,-160,3);
+    }
+    else if(e.kind==='ko'){
+      pushLog(`K.O. — ${e.winner.name} переміг!`, '#ffd24a');
+      lightFlash=1; lightCol='#fff';
+    }
+  }
+}
+
+// ---- BUFF/DEBUFF TRAY (separate from HP bar; +green / -red framed) --------
+function drawStatusTray(f){
+  const sx=creatureScreenX(f)*zoom + (1-zoom)*W/2 + camX;
+  const top=(ground-lift_(f)-3.4*PX*f.scale*combatCellMul()-70)*zoom + (1-zoom)*H/2 + camY;
+  const chip=26, gap=6;
+  // order: buffs first, then debuffs
+  const sorted=[...f.statuses].sort((a,b)=> (STATUS_DEF[b.key].sign)-(STATUS_DEF[a.key].sign));
+  const totalW=sorted.length*(chip+gap)-gap;
+  let x=sx-totalW/2; const y=top;
+  for(const st of sorted){
+    const def=STATUS_DEF[st.key];
+    const pos=def.sign>0;
+    const frame = pos ? '#3fe08a' : '#e5534b';
+    const fillBg = pos ? 'rgba(20,46,30,0.92)' : 'rgba(48,18,18,0.92)';
+    const k=Math.max(0.08, st.dur/def.dur);   // countdown -> shrink the fill
+    // chip background
+    ctx.fillStyle=fillBg; ctx.fillRect(x,y,chip,chip);
+    // countdown shrink bar (bottom)
+    ctx.fillStyle=pos?'rgba(63,224,138,0.45)':'rgba(229,83,75,0.45)';
+    ctx.fillRect(x, y+chip-4, chip*k, 3);
+    // +/- frame (thick, instantly distinguishable)
+    ctx.strokeStyle=frame; ctx.lineWidth=2.5; ctx.strokeRect(x+1,y+1,chip-2,chip-2);
+    // icon: trait icon for buffs, emoji-ish glyph for debuffs (drawn vector)
+    if(def.iconTrait){ drawTraitIcon(def.iconTrait, x+chip/2, y+chip/2-1, chip-6, frame); }
+    else if(def.glyph==='cross'){ drawTraitIcon('cross', x+chip/2, y+chip/2-1, chip-6, frame); }
+    else if(def.glyph==='shield'){ drawTraitIcon('shield', x+chip/2, y+chip/2-1, chip-6, frame); }
+    else {
+      // debuff emoji glyph
+      ctx.font='15px system-ui'; ctx.textAlign='center'; ctx.fillStyle='#fff';
+      ctx.fillText(def.glyph, x+chip/2, y+chip/2+5); ctx.textAlign='left';
+    }
+    // stack count badge
+    if(st.stacks>1){
+      ctx.font='bold 10px system-ui'; ctx.textAlign='right';
+      ctx.fillStyle='#000'; ctx.fillText('×'+st.stacks, x+chip-1, y+chip-2);
+      ctx.fillStyle='#fff'; ctx.fillText('×'+st.stacks, x+chip-2, y+chip-3);
+      ctx.textAlign='left';
+    }
+    // +/- corner tag
+    ctx.font='bold 11px system-ui'; ctx.textAlign='left';
+    ctx.fillStyle=frame; ctx.fillText(pos?'+':'−', x+2, y+11);
+    x+=chip+gap;
+  }
+  // legend the very first time-ish (small hint)
+  if(sorted.length){
+    ctx.font='9px system-ui'; ctx.textAlign='center'; ctx.fillStyle='#8aa0bc';
+    ctx.fillText('зелене=бафф  ·  червоне=дебафф', sx, y-4); ctx.textAlign='left';
+  }
+}
+
+function drawPopups(){
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(const pp of popups){
+    const x=pp.x*zoom + (1-zoom)*W/2 + camX;
+    const y=pp.y*zoom + (1-zoom)*H/2 + camY;
+    const u=pp.t/pp.life;
+    const a=Math.min(1,(1-u)*2);
+    ctx.globalAlpha=a;
+    // icon chip
+    const r=15+ (1-Math.min(1,pp.t*4))*8;   // pop-in
+    ctx.fillStyle='rgba(8,12,20,0.85)';
+    ctx.beginPath(); ctx.arc(x-1, y, r, 0,7); ctx.fill();
+    ctx.strokeStyle=pp.col; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(x-1,y,r,0,7); ctx.stroke();
+    drawTraitIcon(pp.key, x-1, y, r*1.6, lighten(pp.col,0.3));
+    // name label
+    ctx.font='bold 14px system-ui';
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.75)';
+    ctx.strokeText(pp.name, x, y-r-10);
+    ctx.fillStyle=lighten(pp.col,0.35); ctx.fillText(pp.name, x, y-r-10);
+  }
+  ctx.globalAlpha=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+}
+
+let camX=0, camY=0;
+function lift_(f){ return (1-depthScale(f))*120; }
+
+function drawHPBar(f){
+  const sx=creatureScreenX(f)*zoom + (1-zoom)*W/2 + camX;
+  const top=(ground-lift_(f)-3.4*PX*f.scale*combatCellMul()-46)*zoom + (1-zoom)*H/2 + camY;
+  const bw=120*(f.boss?1.25:1), bh=11, x=sx-bw/2, y=top;
+  ctx.font='bold 13px system-ui'; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle = f.accent;
+  ctx.fillText(f.name, x, y-6);
+  ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(x-2,y-2,bw+4,bh+4);
+  ctx.fillStyle='rgba(255,255,255,0.6)';
+  ctx.fillRect(x, y, bw*Math.max(0,f.hpChip)/f.maxHP, bh);
+  const frac=Math.max(0,f.hpShown)/f.maxHP;
+  const col = frac>0.5?'#56d364':frac>0.25?'#e3b341':'#e5534b';
+  ctx.fillStyle=col; ctx.fillRect(x, y, bw*frac, bh);
+  ctx.font='9px system-ui'; ctx.fillStyle='#0a0d12';
+  ctx.fillText(Math.ceil(Math.max(0,f.hpShown))+'', x+4, y+9);
+}
+function drawATB(){
+  for(const f of fighters){
+    if(!f.alive) continue;
+    const sx=creatureScreenX(f)*zoom+(1-zoom)*W/2+camX;
+    const top=(ground-lift_(f)-3.4*PX*f.scale*combatCellMul()-46)*zoom+(1-zoom)*H/2+camY;
+    const bw=120*(f.boss?1.25:1), x=sx-bw/2, y=top+16;
+    ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(x,y,bw,4);
+    ctx.fillStyle='#7fc8ff'; ctx.fillRect(x,y,bw*f.atb,4);
+  }
+}
+function drawFloaters(){
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(const fl of floaters){
+    const a=Math.min(1, (fl.life-fl.t)*3);
+    const x=fl.x*zoom + (1-zoom)*W/2 + camX;
+    const y=fl.y*zoom + (1-zoom)*H/2 + camY;
+    const pop=1+fl.pop*0.8;
+    const size=(fl.big?30:18)*pop;
+    ctx.globalAlpha=a;
+    ctx.font=`bold ${size}px system-ui`;
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.7)';
+    ctx.strokeText(fl.text, x, y);
+    ctx.fillStyle=fl.col; ctx.fillText(fl.text, x, y);
+  }
+  ctx.globalAlpha=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+}
+function drawLog(){
+  const w=330, x=W-w-14, lh=19, n=log.length, y0=H-14-n*lh;
+  ctx.fillStyle='rgba(8,12,20,0.55)';
+  ctx.fillRect(x-8, y0-22, w+8, n*lh+28);
+  ctx.fillStyle='rgba(160,180,210,0.5)';
+  ctx.font='bold 11px system-ui'; ctx.textAlign='left';
+  ctx.fillText('БОЙОВИЙ ЛОГ', x, y0-8);
+  ctx.font='12px system-ui';
+  for(let i=0;i<n;i++){
+    const e=log[i]; const fade=0.4+0.6*((i+1)/n);
+    ctx.globalAlpha=fade; ctx.fillStyle=e.col;
+    ctx.fillText(e.text, x, y0+i*lh+8);
+  }
+  ctx.globalAlpha=1;
+}
+function drawVignetteAndLight(){
+  if(lightFlash>0){
+    ctx.globalAlpha=lightFlash*0.5;
+    const g=ctx.createRadialGradient(W/2,ground-100,40,W/2,H/2,W*0.7);
+    g.addColorStop(0,lightCol); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1;
+  }
+  const v=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.35,W/2,H/2,Math.max(W,H)*0.72);
+  v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,0,0,0.55)');
+  ctx.fillStyle=v; ctx.fillRect(0,0,W,H);
+}
+function drawResultBanner(){
+  ctx.save();
+  ctx.globalAlpha=0.92;
+  ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(0,ground-150,W,90);
+  ctx.textAlign='center';
+  ctx.font='bold 42px system-ui'; ctx.fillStyle='#ffe24a';
+  ctx.fillText('K.O.', W/2, ground-110);
+  ctx.font='bold 22px system-ui'; ctx.fillStyle=resultCol;
+  ctx.fillText(resultText, W/2, ground-78);
+  ctx.font='14px system-ui'; ctx.fillStyle='#bcd0ee';
+  ctx.fillText('наступний суперник за мить…', W/2, ground-50);
+  ctx.restore(); ctx.textAlign='left';
+}
+
+function drawCombat(rawDt){
+  drawArena();
+  ctx.save();
+  ctx.translate(W/2+camX, H/2+camY);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-W/2, -H/2);
+  for(const f of fighters) drawShadow(f);
+  const order=[...fighters].sort((a,b)=>depthScale(a)-depthScale(b));
+  for(const f of order) drawCreature(f);
+  drawProjectiles();
+  drawBolts();
+  drawSlashFX(rawDt);
+  drawParticles();
+  ctx.restore();
+
+  drawVignetteAndLight();
+  for(const f of fighters){ if(f.alive){ drawHPBar(f); drawStatusTray(f); } }
+  drawATB();
+  drawFloaters();
+  drawPopups();
+  drawLog();
+  if(phase==='result') drawResultBanner();
+
+  // combat header
+  ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
+  ctx.fillText('БІЙ — LOD: чисті блоки + причинний спалах (без гліфів)', 16, 24);
+}
+
+/* ============================================================================
+   12. CAMERA / JUICE
+   ========================================================================== */
+let timeScale = 1, slowmoT = 0, slowmoTarget = 1;
+let zoom = 1, zoomPunch = 0;
+function triggerSlowmo(scale, dur){ slowmoTarget=scale; slowmoT=dur; }
+function triggerZoom(amount){ zoomPunch=Math.max(zoomPunch, amount); }
+function cameraStep(rdt){
+  if(slowmoT>0){ slowmoT-=rdt; timeScale += (slowmoTarget-timeScale)*Math.min(1,10*rdt); }
+  else timeScale += (1-timeScale)*Math.min(1,6*rdt);
+  zoomPunch *= Math.pow(0.0009, rdt);
+  const breathe = 1 + ZOOM_BREATH*Math.sin(t*1.3);
+  zoom += ((breathe+zoomPunch) - zoom) * Math.min(1, 8*rdt);
+}
+
+/* ============================================================================
+   13. MAIN LOOP + INPUT + SELF-TESTS
+   ========================================================================== */
+let mouseX=-1, mouseY=-1;
+function setupInput(){
+  if(typeof document==='undefined') return;
+  const btnAll=document.getElementById('btnAll');
+  const btnGo=document.getElementById('btnGo');
+  if(btnAll) btnAll.addEventListener('click', ()=>{
+    showAllBonds=!showAllBonds;
+    btnAll.textContent='всі звʼязки: '+(showAllBonds?'УВІМК':'ВИМК');
+  });
+  if(btnGo) btnGo.addEventListener('click', ()=>{
+    if(APP==='builder'){ startCombat(); btnGo.textContent='назад у білдер ←'; btnGo.className='btn'; }
+    else { APP='builder'; recompute(); btnGo.textContent='В бій →'; btnGo.className='btn go'; }
+  });
+
+  addEventListener('mousemove', e=>{ mouseX=e.clientX; mouseY=e.clientY; });
+  addEventListener('mouseleave', ()=>{ mouseX=-1; mouseY=-1; });
+  addEventListener('keydown', e=>{
+    if(APP!=='builder') return;
+    if(e.key==='['){ builderZoom=Math.max(0.5, builderZoom-0.1); }
+    if(e.key===']'){ builderZoom=Math.min(2.0, builderZoom+0.1); }
+    if(e.key==='b' || e.key==='B'){ showAllBonds=!showAllBonds; const b=document.getElementById('btnAll'); if(b)b.textContent='всі звʼязки: '+(showAllBonds?'УВІМК':'ВИМК'); }
+  });
+  cv.addEventListener('click', e=>{
+    if(APP!=='builder') return;
+    const mx=e.clientX, my=e.clientY;
+    // preset buttons
+    const pk=presetHit(mx,my); if(pk){ loadPreset(pk); return; }
+    // palette
+    const ptype=paletteHit(mx,my); if(ptype){ selectedType=ptype; return; }
+    // grid: place / remove
+    // first, is there a pixel under the click?
+    const idx=pixelUnderMouse(mx,my);
+    if(idx>=0){ removePixel(idx); return; }
+    const {gx,gy}=screenToGrid(mx,my);
+    placePixel(gx,gy);
+  });
+}
+function pixelUnderMouse(mx,my){
+  const { cell } = builderGeom();
+  for(let i=0;i<build.length;i++){
+    const p=build[i]; const s=gridToScreen(p.gx,p.gy);
+    if(mx>=s.x-cell/2 && mx<=s.x+cell/2 && my>=s.y-cell/2 && my<=s.y+cell/2) return i;
+  }
+  return -1;
+}
+function updateBuilderHover(){
+  hoverPixIdx=-1; hoverCell=null;
+  if(mouseX<0) return;
+  hoverPixIdx=pixelUnderMouse(mouseX,mouseY);
+  hoverCell=screenToGrid(mouseX,mouseY);
+}
+
+function frame(ts){
+  const rawDt = Math.min(0.05, (frame._p?ts-frame._p:16)/1000); frame._p=ts;
+  t += rawDt;
+  cameraStep(rawDt);
+
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  if(APP==='builder'){
+    updateBuilderHover();
+    // gentle idle spring relax of builder pixels not needed (static grid)
+    drawBuilder();
+  } else {
+    let simDt = rawDt * timeScale;
+    if(hitstop>0){ hitstop -= rawDt; simDt = 0; }
+    if(phase==='fight'){
+      if(simDt>0){ stepDelayed(simDt); simStep(simDt); stepFlare(simDt); }
+      consumeEvents();
+    } else if(phase==='result'){
+      consumeEvents();
+      if(simDt>0) stepFlare(simDt);
+      resultT -= rawDt;
+      if(resultT<=0) nextFoe();
+    }
+    physStep((phase==='fight' && hitstop>0) ? 0 : simDt);
+    const shx=(rnd()-.5)*shake, shy=(rnd()-.5)*shake;
+    camX=shx; camY=shy;
+    drawCombat(rawDt);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+/* ----------------------------------------------------------------------------
+   SELF-TESTS — synergy/shape detectors against known builds. Runs in headless
+   Node (no document) AND prints to console in-browser. Returns {pass,fail}.
+   ---------------------------------------------------------------------------- */
+function runSelfTests(logFn){
+  const out = logFn || ((s)=>{ if(typeof console!=='undefined') console.log(s); });
+  let pass=0, fail=0;
+  function check(name, cond){
+    if(cond){ pass++; out('PASS  '+name); }
+    else { fail++; out('FAIL  '+name); }
+  }
+  function traitMag(traits,key){ const t=traits.find(x=>x.key===key); return t?t.magnitude:0; }
+
+  // 1. «Лезо» Force↔Force: a 3-in-a-row horizontal force => 2 bonded pairs
+  {
+    const b=B([[0,0,'core'],[1,0,'force'],[2,0,'force'],[3,0,'force']]);
+    const s=detectSynergies(b);
+    check('blade: 3 force in a row -> 2 pairs', traitMag(s,'blade')===2);
+  }
+  // 2. «Форпост» Plate↔Vital pair
+  {
+    const b=B([[0,0,'core'],[0,1,'vital'],[1,1,'plate']]);
+    const s=detectSynergies(b);
+    check('outpost: 1 plate-vital pair', traitMag(s,'outpost')===1);
+    // adjacency requires orth touch; diagonal should NOT count
+    const b2=B([[0,0,'core'],[0,1,'vital'],[1,2,'plate'],[1,1,'force']]);
+    const s2=detectSynergies(b2);
+    check('outpost: diagonal does not bond', traitMag(s2,'outpost')===0);
+  }
+  // 3. «Розпал» Ember↔Mana
+  {
+    const b=B([[0,0,'core'],[1,0,'ember'],[2,0,'mana']]);
+    check('kindle: ember-mana pair', traitMag(detectSynergies(b),'kindle')===1);
+  }
+  // 4. «Потік» Swift↔Swift
+  {
+    const b=B([[0,0,'core'],[0,1,'swift'],[1,1,'swift'],[1,0,'swift']]);
+    // pairs: (0,1)-(1,1) and (1,1)-(1,0) = 2
+    check('flow: L of 3 swift -> 2 pairs', traitMag(detectSynergies(b),'flow')===2);
+  }
+  // 5. «Підсилення» Catalyst↔element
+  {
+    const b=B([[0,0,'core'],[1,0,'catalyst'],[2,0,'ember'],[1,1,'frost']]);
+    // catalyst touches ember(right) and frost(down) = 2 pairs
+    check('amplify: catalyst+2 elements -> 2 pairs', traitMag(detectSynergies(b),'amplify')===2);
+  }
+  // 6. «Шип» 3+ force line
+  {
+    const b=B([[0,0,'core'],[0,-1,'force'],[0,-2,'force'],[0,-3,'force']]);
+    check('spike: vertical 3 force -> 1 line', traitMag(detectShapes(b),'spike')===1);
+    const b2=B([[0,0,'core'],[1,0,'force'],[2,0,'force']]);
+    check('spike: only 2 force -> none', traitMag(detectShapes(b2),'spike')===0);
+  }
+  // 7. «Бастіон» 2x2 plate
+  {
+    const b=B([[0,0,'core'],[0,1,'plate'],[1,1,'plate'],[0,2,'plate'],[1,2,'plate']]);
+    check('bastion: 2x2 plate -> 1 block', traitMag(detectShapes(b),'bastion')===1);
+  }
+  // 8. «Серце» 5 vital plus
+  {
+    const b=B([[0,0,'core'],[2,0,'vital'],[2,-1,'vital'],[2,1,'vital'],[1,0,'vital'],[3,0,'vital']]);
+    check('heart: vital plus -> 1 cross', traitMag(detectShapes(b),'heart')===1);
+  }
+  // 9. «Рівновага» mirror symmetry
+  {
+    const b=B([[0,0,'core'],[-1,0,'force'],[1,0,'force'],[0,1,'vital']]);
+    check('balance: symmetric build -> active', traitMag(detectShapes(b),'balance')===1);
+    const b2=B([[0,0,'core'],[1,0,'force'],[2,0,'vital'],[-1,0,'force']]);
+    check('balance: asymmetric -> inactive', traitMag(detectShapes(b2),'balance')===0);
+  }
+  // 10. deriveStats folds traits: outpost adds HP
+  {
+    const base=B([[0,0,'core'],[0,1,'vital'],[0,2,'vital']]);
+    const withPlate=B([[0,0,'core'],[0,1,'vital'],[0,2,'vital'],[1,1,'plate'],[1,2,'plate']]);
+    const s0=deriveStats(base), s1=deriveStats(withPlate);
+    // 2 plate-vital pairs -> +2*7 HP plus 2 vital base equal; compare delta from outpost only is tricky
+    check('deriveStats: outpost present in withPlate', s1.traits.some(x=>x.key==='outpost'));
+    check('deriveStats: blockChance 0 without bastion', s0.blockChance===0);
+  }
+  // 11. big preset has many traits & stats sane
+  {
+    const s=deriveStats(TITAN_BUILD);
+    check('titan: >=6 traits active', s.traits.length>=6);
+    check('titan: maxHP > base', s.maxHP>60);
+    check('titan: has bastion block>0', s.blockChance>0);
+    check('titan: has heart regen>0', s.regenPerSec>0);
+  }
+
+  out('---- SELF-TESTS: '+pass+' PASS / '+fail+' FAIL ----');
+  return { pass, fail };
+}
+
+// run tests once at startup (console), then start the loop in-browser
+if(typeof document!=='undefined' && document.getElementById && document.getElementById('c') && cv && cv.getContext){
+  try { runSelfTests(); } catch(_){}
+}
+
+// expose for headless harness
+if(typeof module!=='undefined'){ module.exports = { runSelfTests, detectSynergies, detectShapes, deriveStats, deriveMoveset, TITAN_BUILD, B }; }
+
+// boot (guarded so headless stub can require without a real RAF)
+if(typeof window!=='undefined' && typeof requestAnimationFrame!=='undefined'){
+  setupInput();
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
