@@ -169,26 +169,40 @@ function drawHeroShadow(cx: number, ground: number, scale: number): void {
 }
 
 /* ===========================================================================
-   HERO SCALE  (bigger the more cubes the player has built)
+   HERO SCALE  (bigger the more cubes, also relative to screen size)
    =========================================================================== */
 function heroDisplayScale(build: Build): number {
   const n = build.length;
   // 1 cube → 1.6x, grows to ~2.4x at 30 cubes, capped at 2.8x
-  return Math.min(2.8, 1.6 + Math.sqrt(Math.max(0, n - 1)) * 0.12);
+  const base = Math.min(2.8, 1.6 + Math.sqrt(Math.max(0, n - 1)) * 0.12);
+  // On narrow portrait screens scale down so hero fits comfortably
+  const narrow = Math.min(W, H);
+  const screenFactor = Math.min(1, narrow / 500);
+  return base * (0.7 + 0.3 * screenFactor);
 }
 
 /* ===========================================================================
    BUTTON RECTS  (CSS pixel space)
+   Responsive: in portrait (W < H) the two secondary buttons shrink to fit.
    =========================================================================== */
 interface ButtonRect { x: number; y: number; w: number; h: number; label: string; key: 'battle'|'builder'|'chest' }
 
 function getButtonRects(): ButtonRect[] {
-  const bw = Math.min(220, W * 0.46);
-  const bh = 56;
-  const sbw = Math.min(140, W * 0.28);
-  const sbh = 46;
-  const margin = 20;
+  const isPortrait = W < H;
+  // Scale button heights relative to screen so they're tappable on small phones
+  const unit = Math.min(W, H);
+  const bh = Math.max(48, Math.min(62, unit * 0.14));
+  const sbh = Math.max(44, Math.min(52, unit * 0.12));
+  const margin = Math.max(10, W * 0.04);
   const bottomY = H - margin - sbh;
+
+  // In portrait, shrink secondary buttons to half-width minus margin
+  const sbw = isPortrait
+    ? Math.min(160, (W - margin * 3) / 2)
+    : Math.min(160, W * 0.28);
+  const bw = isPortrait
+    ? Math.min(W - margin * 2, W * 0.88)
+    : Math.min(240, W * 0.46);
 
   const battle: ButtonRect = {
     x: W * 0.5 - bw / 2,
@@ -468,14 +482,29 @@ function frame(now: number): void {
 raf = requestAnimationFrame(frame);
 
 /* ===========================================================================
-   HIT TESTING  — click listener in CSS px space
+   HIT TESTING — pointer events (mouse + touch + pen unified)
    =========================================================================== */
-function onCanvasClick(e: MouseEvent): void {
-  const rect   = cv.getBoundingClientRect();
-  const mx     = e.clientX - rect.left;
-  const my     = e.clientY - rect.top;
-  const btns   = getButtonRects();
+// Tap detection: track pointerdown position to avoid scroll-drag false taps
+let _pdX = -1, _pdY = -1;
 
+function onPointerDown(e: PointerEvent): void {
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  _pdX = e.clientX - rect.left;
+  _pdY = e.clientY - rect.top;
+}
+
+function onPointerUp(e: PointerEvent): void {
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  // Only fire if pointer didn't travel far (tap, not drag)
+  const dx = mx - _pdX, dy = my - _pdY;
+  if (_pdX < 0 || dx * dx + dy * dy > 400) { _pdX = -1; _pdY = -1; return; }
+  _pdX = -1; _pdY = -1;
+
+  const btns = getButtonRects();
   for (const btn of btns) {
     if (mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h) {
       if (btn.key === 'battle')  opts.onBattle();
@@ -485,12 +514,8 @@ function onCanvasClick(e: MouseEvent): void {
     }
   }
 }
-cv.addEventListener('click', onCanvasClick);
 
-/* ===========================================================================
-   OPTIONAL: cursor pointer on hover
-   =========================================================================== */
-function onCanvasMove(e: MouseEvent): void {
+function onPointerMove(e: PointerEvent): void {
   const rect = cv.getBoundingClientRect();
   const mx   = e.clientX - rect.left;
   const my   = e.clientY - rect.top;
@@ -498,7 +523,15 @@ function onCanvasMove(e: MouseEvent): void {
   const hit  = btns.some(b => mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h);
   cv.style.cursor = hit ? 'pointer' : 'default';
 }
-cv.addEventListener('mousemove', onCanvasMove);
+
+function onPointerLeave(): void {
+  cv.style.cursor = 'default';
+}
+
+cv.addEventListener('pointerdown', onPointerDown);
+cv.addEventListener('pointerup', onPointerUp);
+cv.addEventListener('pointermove', onPointerMove);
+cv.addEventListener('pointerleave', onPointerLeave);
 
 /* ===========================================================================
    DISPOSER
@@ -508,8 +541,10 @@ function stop(): void {
   if (stopped) return;
   stopped = true;
   cancelAnimationFrame(raf);
-  cv.removeEventListener('click', onCanvasClick);
-  cv.removeEventListener('mousemove', onCanvasMove);
+  cv.removeEventListener('pointerdown', onPointerDown);
+  cv.removeEventListener('pointerup', onPointerUp);
+  cv.removeEventListener('pointermove', onPointerMove);
+  cv.removeEventListener('pointerleave', onPointerLeave);
   window.removeEventListener('resize', resize);
   cv.remove();
 }

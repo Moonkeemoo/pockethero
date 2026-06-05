@@ -272,12 +272,17 @@ const heroRosterEntry: RosterEntry = opts?.heroBuild
    6. SIM
    ========================================================================== */
 const cv = document.createElement('canvas');
-cv.style.cssText = 'display:block;width:100%;height:100%;image-rendering:pixelated;position:fixed;inset:0;z-index:10;';
+cv.style.cssText = 'display:block;width:100%;height:100%;image-rendering:pixelated;position:fixed;inset:0;z-index:10;touch-action:none;';
 document.body.style.cssText = 'margin:0;height:100%;background:#070a0f;overflow:hidden;font-family:"Segoe UI",system-ui,sans-serif;color:#cfd6e0';
 document.body.appendChild(cv);
 const ctx = cv.getContext('2d')!;
 let W = 0, H = 0, ground = 0;
-function resize(): void { W = cv.width = innerWidth; H = cv.height = innerHeight; ground = H*0.70; }
+function resize(): void {
+  W = innerWidth; H = innerHeight;
+  cv.width = W; cv.height = H;
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  ground = H * 0.70;
+}
 window.addEventListener('resize', resize); resize();
 
 function makeFighter(entry: RosterEntry): Fighter {
@@ -1039,19 +1044,37 @@ function drawFloaters(): void {
 }
 
 function drawLog(): void {
-  const w=340, x=W-w-14, lh=20, n=log.length, y0=H-14-n*lh;
+  // On narrow screens clip the log width so it doesn't overlap fighters
+  const maxLogW = Math.min(340, W * 0.48);
+  const w = maxLogW, x = W - w - 14, lh = 18, n = log.length, y0 = H - 14 - n * lh;
+  // Only show last 5 entries on narrow screens to avoid covering fighters
+  const maxEntries = W < 480 ? 4 : 9;
+  const shown = log.slice(Math.max(0, log.length - maxEntries));
+  const ns = shown.length;
+  const y0s = H - 14 - ns * lh;
   ctx.fillStyle='rgba(8,12,20,0.55)';
-  ctx.fillRect(x-8, y0-22, w+8, n*lh+28);
+  ctx.fillRect(x - 8, y0s - 22, w + 8, ns * lh + 28);
   ctx.fillStyle='rgba(160,180,210,0.5)';
   ctx.font='bold 11px system-ui'; ctx.textAlign='left';
-  ctx.fillText('БОЙОВИЙ ЛОГ', x, y0-8);
-  ctx.font='13px system-ui';
-  for(let i=0;i<n;i++){
-    const e=log[i]!; const fade=0.4+0.6*((i+1)/n);
-    ctx.globalAlpha=fade; ctx.fillStyle=e.col;
-    ctx.fillText(e.text, x, y0+i*lh+8);
+  ctx.fillText('БОЙОВИЙ ЛОГ', x, y0s - 8);
+  ctx.font = W < 480 ? '11px system-ui' : '13px system-ui';
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x - 8, y0s - 22, w + 8, ns * lh + 28); ctx.clip();
+  for (let i = 0; i < ns; i++) {
+    const e = shown[i]!; const fade = 0.4 + 0.6 * ((i + 1) / ns);
+    ctx.globalAlpha = fade; ctx.fillStyle = e.col;
+    // Truncate long lines on narrow screens
+    let text = e.text;
+    if (W < 480) {
+      ctx.font = '11px system-ui';
+      while (text.length > 4 && ctx.measureText(text).width > w - 4) text = text.slice(0, -2);
+      if (text !== e.text) text = text.slice(0, -1) + '…';
+    }
+    ctx.fillText(text, x, y0s + i * lh + 8);
   }
-  ctx.globalAlpha=1;
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  void w; void x; void lh; void n; void y0; // suppress unused
 }
 
 function drawATB(): void {
@@ -1222,19 +1245,45 @@ function drawHUD(): void {
 }
 
 /* ============================================================================
-   11. CLICK HANDLER for "← Білдер" button
+   11. POINTER HANDLER for "← Білдер" button (works for mouse + touch)
    ============================================================================ */
-function handleClick(ev: MouseEvent): void {
-  if(!opts?.onExit) return;
-  if(phase !== 'result') return;
-  const btnW=140, btnH=36, btnX=W/2-btnW/2, btnY=H*0.54;
-  const cx=ev.clientX, cy=ev.clientY;
-  if(cx>=btnX && cx<=btnX+btnW && cy>=btnY && cy<=btnY+btnH) {
+let _gPdX = -1, _gPdY = -1;
+function handlePointerDown(ev: PointerEvent): void {
+  ev.preventDefault();
+  _gPdX = ev.clientX; _gPdY = ev.clientY;
+}
+function handlePointerUp(ev: PointerEvent): void {
+  ev.preventDefault();
+  if (!opts?.onExit) return;
+  if (phase !== 'result') { _gPdX = -1; _gPdY = -1; return; }
+  const dx = ev.clientX - _gPdX, dy = ev.clientY - _gPdY;
+  if (_gPdX < 0 || dx * dx + dy * dy > 400) { _gPdX = -1; _gPdY = -1; return; }
+  _gPdX = -1; _gPdY = -1;
+  const btnW = 140, btnH = 36, btnX = W / 2 - btnW / 2, btnY = H * 0.54;
+  const cx = ev.clientX, cy = ev.clientY;
+  if (cx >= btnX && cx <= btnX + btnW && cy >= btnY && cy <= btnY + btnH) {
     stop();
     opts.onExit({ won: lastHeroWon, stagesCleared });
   }
 }
-if(opts?.onExit) window.addEventListener('click', handleClick);
+if (opts?.onExit) {
+  window.addEventListener('pointerdown', handlePointerDown);
+  window.addEventListener('pointerup', handlePointerUp);
+}
+// Keep legacy click for non-pointer browsers (no-op if pointer already handled)
+function handleClick(ev: MouseEvent): void {
+  if (!opts?.onExit) return;
+  if (phase !== 'result') return;
+  // Only fire if no pointer events were used (fallback)
+  if (_gPdX >= 0) return;
+  const btnW = 140, btnH = 36, btnX = W / 2 - btnW / 2, btnY = H * 0.54;
+  const cx = ev.clientX, cy = ev.clientY;
+  if (cx >= btnX && cx <= btnX + btnW && cy >= btnY && cy <= btnY + btnH) {
+    stop();
+    opts.onExit({ won: lastHeroWon, stagesCleared });
+  }
+}
+if (opts?.onExit) window.addEventListener('click', handleClick);
 
 /* ============================================================================
    12. MAIN LOOP
@@ -1317,6 +1366,10 @@ function stop(): void {
   cv.remove();
   window.removeEventListener('resize', resize);
   window.removeEventListener('click', handleClick);
+  if (opts?.onExit) {
+    window.removeEventListener('pointerdown', handlePointerDown);
+    window.removeEventListener('pointerup', handlePointerUp);
+  }
 }
 _prevStop = stop;
 return stop;
@@ -1427,12 +1480,17 @@ export function startCampaignBattle(opts: {
      5. CANVAS
      ------------------------------------------------------------------------ */
   const cv2 = document.createElement('canvas');
-  cv2.style.cssText = 'display:block;width:100%;height:100%;image-rendering:pixelated;position:fixed;inset:0;z-index:10;';
+  cv2.style.cssText = 'display:block;width:100%;height:100%;image-rendering:pixelated;position:fixed;inset:0;z-index:10;touch-action:none;';
   document.body.style.cssText = 'margin:0;height:100%;background:#070a0f;overflow:hidden;font-family:"Segoe UI",system-ui,sans-serif;color:#cfd6e0';
   document.body.appendChild(cv2);
   const ctx2 = cv2.getContext('2d')!;
   let W2 = 0, H2 = 0, ground2 = 0;
-  function resize2(): void { W2 = cv2.width = innerWidth; H2 = cv2.height = innerHeight; ground2 = H2 * 0.70; }
+  function resize2(): void {
+    W2 = innerWidth; H2 = innerHeight;
+    cv2.width = W2; cv2.height = H2;
+    cv2.style.width = W2 + 'px'; cv2.style.height = H2 + 'px';
+    ground2 = H2 * 0.70;
+  }
   window.addEventListener('resize', resize2); resize2();
 
   /* --------------------------------------------------------------------------
@@ -2189,18 +2247,32 @@ export function startCampaignBattle(opts: {
     ctx2.globalAlpha = 1; ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
   }
   function drawLog2(): void {
-    const w = 340, x = W2 - w - 14, lh = 20, n = log2.length, y0 = H2 - 14 - n * lh;
+    const maxLogW = Math.min(340, W2 * 0.48);
+    const w = maxLogW, x = W2 - w - 14, lh = 18;
+    const maxEntries = W2 < 480 ? 4 : 9;
+    const shown = log2.slice(Math.max(0, log2.length - maxEntries));
+    const ns = shown.length;
+    const y0s = H2 - 14 - ns * lh;
     ctx2.fillStyle = 'rgba(8,12,20,0.55)';
-    ctx2.fillRect(x - 8, y0 - 22, w + 8, n * lh + 28);
+    ctx2.fillRect(x - 8, y0s - 22, w + 8, ns * lh + 28);
     ctx2.fillStyle = 'rgba(160,180,210,0.5)';
     ctx2.font = 'bold 11px system-ui'; ctx2.textAlign = 'left';
-    ctx2.fillText('БОЙОВИЙ ЛОГ', x, y0 - 8);
-    ctx2.font = '13px system-ui';
-    for (let i = 0; i < n; i++) {
-      const e = log2[i]!; const fade = 0.4 + 0.6 * ((i + 1) / n);
+    ctx2.fillText('БОЙОВИЙ ЛОГ', x, y0s - 8);
+    ctx2.font = W2 < 480 ? '11px system-ui' : '13px system-ui';
+    ctx2.save();
+    ctx2.beginPath(); ctx2.rect(x - 8, y0s - 22, w + 8, ns * lh + 28); ctx2.clip();
+    for (let i = 0; i < ns; i++) {
+      const e = shown[i]!; const fade = 0.4 + 0.6 * ((i + 1) / ns);
       ctx2.globalAlpha = fade; ctx2.fillStyle = e.col;
-      ctx2.fillText(e.text, x, y0 + i * lh + 8);
+      let text = e.text;
+      if (W2 < 480) {
+        ctx2.font = '11px system-ui';
+        while (text.length > 4 && ctx2.measureText(text).width > w - 4) text = text.slice(0, -2);
+        if (text !== e.text) text = text.slice(0, -1) + '…';
+      }
+      ctx2.fillText(text, x, y0s + i * lh + 8);
     }
+    ctx2.restore();
     ctx2.globalAlpha = 1;
   }
   function drawVignetteAndLight2(): void {
@@ -2422,9 +2494,33 @@ export function startCampaignBattle(opts: {
   }
 
   /* --------------------------------------------------------------------------
-     CLICK HANDLER — "← Лоббі" early exit
+     POINTER HANDLER — "← Лоббі" early exit (works for mouse + touch)
      ------------------------------------------------------------------------ */
+  let _c2PdX = -1, _c2PdY = -1;
+  function handlePointerDown2(ev: PointerEvent): void {
+    ev.preventDefault();
+    _c2PdX = ev.clientX; _c2PdY = ev.clientY;
+  }
+  function handlePointerUp2(ev: PointerEvent): void {
+    ev.preventDefault();
+    if (phase2 !== 'result') { _c2PdX = -1; _c2PdY = -1; return; }
+    const dx = ev.clientX - _c2PdX, dy = ev.clientY - _c2PdY;
+    if (_c2PdX < 0 || dx * dx + dy * dy > 400) { _c2PdX = -1; _c2PdY = -1; return; }
+    _c2PdX = -1; _c2PdY = -1;
+    const btnW = 140, btnH = 36, btnX = W2 / 2 - btnW / 2, btnY = H2 * 0.54;
+    const cx = ev.clientX, cy = ev.clientY;
+    if (cx >= btnX && cx <= btnX + btnW && cy >= btnY && cy <= btnY + btnH) {
+      if (sessionOver) return;
+      sessionOver = true;
+      stop2();
+      opts.onExit({ outcome: 'defeated', stagesWon, rewards });
+    }
+  }
+  window.addEventListener('pointerdown', handlePointerDown2);
+  window.addEventListener('pointerup', handlePointerUp2);
+  // Legacy click fallback
   function handleClick2(ev: MouseEvent): void {
+    if (_c2PdX >= 0) return; // pointer events already handled
     if (phase2 !== 'result') return;
     const btnW = 140, btnH = 36, btnX = W2 / 2 - btnW / 2, btnY = H2 * 0.54;
     const cx = ev.clientX, cy = ev.clientY;
@@ -2524,6 +2620,8 @@ export function startCampaignBattle(opts: {
     cv2.remove();
     window.removeEventListener('resize', resize2);
     window.removeEventListener('click', handleClick2);
+    window.removeEventListener('pointerdown', handlePointerDown2);
+    window.removeEventListener('pointerup', handlePointerUp2);
   }
   _prevStop = stop2;
   return stop2;

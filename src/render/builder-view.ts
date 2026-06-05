@@ -43,6 +43,8 @@ const RARITY_UA: Record<string, string>     = { common: 'звичайний', ra
 const RARITY_ORDER: Record<string, number>  = { common: 0, rare: 1, epic: 2, legendary: 3 };
 
 const RIGHT_PANEL_W = 360;
+// Portrait breakpoint: if W < this we reflow to bottom-strip layout
+const PORTRAIT_BREAKPOINT = 760;
 
 // ---------------------------------------------------------------------------
 // 1. CATEGORY META (verbatim from poc lines 166-174)
@@ -597,14 +599,27 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   let mouseX = -1, mouseY = -1;
   let t = 0;
 
-  // ---- GEOMETRY (verbatim from poc lines 1744-1759) ----
+  // ---- GEOMETRY — responsive: portrait uses bottom-strip layout ----
+  function isPortrait(): boolean { return W < PORTRAIT_BREAKPOINT; }
+  /** Height of the bottom inventory strip in portrait mode */
+  function portraitStripH(): number { return Math.round(H * 0.38); }
+
   function builderGeom() {
     const cell = BUILD_CELL * builderZoom;
-    const panelW = RIGHT_PANEL_W;
+    if (isPortrait()) {
+      // In portrait: grid fills the top area, panel goes to a bottom strip
+      const stripH = portraitStripH();
+      const areaH = H - stripH;
+      const areaW = W;
+      const cx = areaW * 0.5;
+      const cy = areaH * 0.50;
+      return { cell, cx, cy, panelW: 0, areaW, portraitMode: true, stripH, areaH };
+    }
+    const panelW = Math.min(RIGHT_PANEL_W, W * 0.38);
     const areaW = W - panelW;
     const cx = areaW * 0.5;
     const cy = H * 0.50;
-    return { cell, cx, cy, panelW, areaW };
+    return { cell, cx, cy, panelW, areaW, portraitMode: false, stripH: 0, areaH: H };
   }
   function gridToScreen(gx: number, gy: number): { x: number; y: number } {
     const { cell, cx, cy } = builderGeom();
@@ -751,9 +766,24 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     return list;
   }
 
-  // ---- RIGHT PANEL LAYOUT (verbatim from poc lines 2106-2119) ----
+  // ---- RIGHT PANEL LAYOUT — responsive ----
   function rightPanelLayout() {
     const GAP = 12;
+    if (isPortrait()) {
+      // Portrait: panels live inside the bottom strip (H - stripH .. H)
+      const stripH = portraitStripH();
+      const stripTop = H - stripH;
+      const invBoxTop = stripTop + 4;
+      const invBoxH = stripH - 4;
+      return {
+        inv: { boxTop: invBoxTop, boxH: invBoxH },
+        stats: { boxTop: stripTop, boxH: 0 },   // hidden in portrait
+        traits: { boxTop: stripTop, boxH: 0 },  // hidden in portrait
+        portraitMode: true,
+        stripTop,
+        stripH,
+      };
+    }
     const invBoxTop = 44;
     const traitsBoxH = 110;
     const traitsBoxTop = H - 146;
@@ -764,6 +794,9 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
       inv: { boxTop: invBoxTop, boxH: invBoxH },
       stats: { boxTop: statsBoxTop, boxH: statsBoxH },
       traits: { boxTop: traitsBoxTop, boxH: traitsBoxH },
+      portraitMode: false,
+      stripTop: 0,
+      stripH: 0,
     };
   }
 
@@ -973,27 +1006,39 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
 
     // footer hint strip
     ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-    const hint = 'БІЛДЕР — обери куб справа · клік: поставити суміжно · клік по кубу: прибрати (повертає в інвентар)';
-    const status = 'кубів: ' + (build.length - 1) + '    масштаб(LOD): ' + (builderZoom).toFixed(2) + '× [ ]    обрано: ' + (CUBES[selectedType]?.name ?? '—');
-    ctx.font = 'bold 13px system-ui'; const hw = ctx.measureText(hint).width;
-    ctx.font = '11px system-ui';      const sw = ctx.measureText(status).width;
-    const bw = Math.max(hw, sw) + 22;
-    ctx.fillStyle = 'rgba(6,10,16,0.62)';
-    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
-      ctx.beginPath();
-      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void }).roundRect(10, H - 58, bw, 46, 8);
-      ctx.fill();
-    } else ctx.fillRect(10, H - 58, bw, 46);
-    ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#9fb4d6';
-    ctx.fillText(hint, 21, H - 38);
-    ctx.font = '11px system-ui'; ctx.fillStyle = '#8fa2bf';
-    ctx.fillText(status, 21, H - 20);
+    // Footer hint — hidden in portrait to save space (the bottom is the inventory strip)
+    if (!isPortrait()) {
+      const hint = 'БІЛДЕР — обери куб справа · клік: поставити суміжно · клік по кубу: прибрати (повертає в інвентар)';
+      const status = 'кубів: ' + (build.length - 1) + '    масштаб(LOD): ' + (builderZoom).toFixed(2) + '× [ ]    обрано: ' + (CUBES[selectedType]?.name ?? '—');
+      ctx.font = 'bold 13px system-ui'; const hw = ctx.measureText(hint).width;
+      ctx.font = '11px system-ui';      const sw = ctx.measureText(status).width;
+      const bw = Math.max(hw, sw) + 22;
+      ctx.fillStyle = 'rgba(6,10,16,0.62)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void }).roundRect(10, H - 58, bw, 46, 8);
+        ctx.fill();
+      } else ctx.fillRect(10, H - 58, bw, 46);
+      ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#9fb4d6';
+      ctx.fillText(hint, 21, H - 38);
+      ctx.font = '11px system-ui'; ctx.fillStyle = '#8fa2bf';
+      ctx.fillText(status, 21, H - 20);
+    } else {
+      // Portrait: show compact "обрано: XXX" status above the bottom strip
+      const stripTop = H - portraitStripH();
+      const selName = CUBES[selectedType]?.name ?? '—';
+      ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#9fb4d6'; ctx.textAlign = 'center';
+      ctx.fillText('Обрано: ' + selName + ' · кубів: ' + (build.length - 1), W / 2, stripTop - 6);
+      ctx.textAlign = 'left';
+    }
   }
 
-  // ---- DRAW INVENTORY PANEL (verbatim from poc lines 2121-2226) ----
+  // ---- DRAW INVENTORY PANEL (responsive: right-side on landscape, bottom-strip on portrait) ----
   function drawInventoryPanel(): void {
-    const { panelW } = builderGeom();
-    const px = W - panelW + 12, pw = panelW - 24;
+    const geom = builderGeom();
+    // In portrait: panel spans full width at the bottom
+    const px = geom.portraitMode ? 8 : W - geom.panelW + 12;
+    const pw = geom.portraitMode ? W - 16 : geom.panelW - 24;
     const L = rightPanelLayout();
     const y = L.inv.boxTop + 26;
     const panelH = L.inv.boxH - 26;
@@ -1048,9 +1093,10 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     invHit.search = { x: px, y: ry, w: pw, h: 18 };
     ry += 26;
 
-    // entries grid
+    // entries grid — more columns on wide portrait strip
     const list = filteredInventory();
-    const cols = 2, ew = (pw - 6) / cols, eh = 44;
+    const cols = geom.portraitMode ? Math.max(2, Math.floor(pw / 140)) : 2;
+    const ew = (pw - (cols - 1) * 6) / cols, eh = 44;
     const listTop = ry;
     const visibleH = (y - 26 + panelH) - listTop - 4;
     const rows = Math.ceil(list.length / cols);
@@ -1061,7 +1107,7 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     ctx.textBaseline = 'alphabetic';
     for (let i = 0; i < list.length; i++) {
       const k = list[i]!;
-      const cxx = px + (i % cols) * (ew + 6), cyy = listTop + ((i / cols) | 0) * eh - invScroll;
+      const cxx = px + (i % cols) * (ew + 6), cyy = listTop + Math.floor(i / cols) * eh - invScroll;
       if (cyy + eh < listTop - 4 || cyy > listTop + visibleH + 4) continue;
       const c = CUBES[k]!;
       const own = owned(k);
@@ -1141,9 +1187,11 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     ctx.textAlign = 'left';
   }
 
-  // ---- DRAW STATS PANEL (verbatim from poc lines 2255-2335) ----
+  // ---- DRAW STATS PANEL — skipped in portrait mode ----
   function drawStatsPanel(): void {
-    const { panelW } = builderGeom();
+    const geomS = builderGeom();
+    if (geomS.portraitMode) return; // stats panel hidden in portrait — shown in inventory area instead
+    const { panelW } = geomS;
     const x = W - panelW + 14, w = panelW - 28;
     const L = rightPanelLayout();
     const y = L.stats.boxTop + 26;
@@ -1225,9 +1273,11 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     return found ? found.name : key;
   }
 
-  // ---- DRAW TRAITS PANEL (verbatim from poc lines 2337-2374) ----
+  // ---- DRAW TRAITS PANEL — skipped in portrait mode ----
   function drawTraitsPanel(): void {
-    const { panelW } = builderGeom();
+    const geomT = builderGeom();
+    if (geomT.portraitMode) return;
+    const { panelW } = geomT;
     const x = W - panelW + 14, w = panelW - 28;
     const y = rightPanelLayout().traits.boxTop + 26;
     const moves = deriveMoveset(build);
@@ -1371,10 +1421,11 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     }
   }
 
-  // ---- DRAW TOASTS (verbatim from poc lines 2454-2472) ----
+  // ---- DRAW TOASTS ----
   function drawToasts(): void {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const cxPos = (W - RIGHT_PANEL_W) / 2;
+    const geomToas = builderGeom();
+    const cxPos = geomToas.portraitMode ? W / 2 : (W - geomToas.panelW) / 2;
     for (let i = 0; i < toasts.length; i++) {
       const ts = toasts[i]!; const u = ts.t / ts.life;
       const a = u < 0.1 ? u * 10 : (u > 0.8 ? (1 - u) * 5 : 1);
@@ -1397,11 +1448,13 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     ctx.globalAlpha = 1; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   }
 
-  // ---- PRESET BUTTONS (verbatim from poc lines 2475-2501) ----
+  // ---- PRESET BUTTONS ----
   function layoutPresetButtons(): void {
     presetButtons.length = 0;
     const keys = Object.keys(PRESETS);
-    let bx = 16, by = H - 86;
+    // In portrait, place above the strip; in landscape, keep near the bottom
+    const byBase = isPortrait() ? H - portraitStripH() - 96 : H - 86;
+    let bx = 16, by = byBase;
     ctx.font = 'bold 11px system-ui';
     for (const k of keys) {
       const label = PRESETS[k]!.name;
@@ -1428,25 +1481,32 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     return null;
   }
 
-  // ---- CREATURE PREVIEW (right-panel preview box) ----
+  // ---- CREATURE PREVIEW (right-panel preview box — landscape only) ----
   function drawCreaturePreview(): void {
-    // Compact preview in the top-right corner area above the inventory panel
-    const { panelW } = builderGeom();
-    const px = W - panelW + 12;
-    const pw = panelW - 24;
-    // Place it at H * 0.50 (grid center Y) in the panel center
+    const geomCp = builderGeom();
+    if (geomCp.portraitMode) return; // no room for preview in portrait
+    const px = W - geomCp.panelW + 12;
+    const pw = geomCp.panelW - 24;
     const previewX = px + pw / 2;
     const previewY = H * 0.50;
     const scaleMul = 0.5;
     drawCreaturePixels(ctx, build, previewX, previewY, scaleMul, t, 0);
   }
 
-  // ---- "У бій!" button ----
+  // ---- "← Лоббі" button — responsive ----
   let fightBtnRect = { x: 0, y: 0, w: 0, h: 0 };
   function drawFightButton(): void {
-    const bw = 110, bh = 30;
-    const bx = W - RIGHT_PANEL_W / 2 - bw / 2;
-    const by = H - 42;
+    const geomB = builderGeom();
+    const bw = 110, bh = geomB.portraitMode ? 36 : 30;
+    let bx: number, by: number;
+    if (geomB.portraitMode) {
+      // In portrait: put it at top-left corner, above the grid area
+      bx = 10;
+      by = 10;
+    } else {
+      bx = W - geomB.panelW / 2 - bw / 2;
+      by = H - 42;
+    }
     fightBtnRect = { x: bx, y: by, w: bw, h: bh };
     ctx.fillStyle = '#2a1d14'; ctx.fillRect(bx, by, bw, bh);
     ctx.strokeStyle = '#a05a32'; ctx.lineWidth = 1.5; ctx.strokeRect(bx, by, bw, bh);
@@ -1460,17 +1520,44 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   let uiDiv: HTMLDivElement | null = null;
   function createActionButtons(): void {
     const ui = document.createElement('div');
-    ui.style.cssText = 'position:fixed;right:14px;top:10px;z-index:5;display:flex;gap:8px;flex-wrap:wrap;max-width:62vw;justify-content:flex-end';
+    // In portrait the "← Лоббі" canvas button is at top-left; push these to top-right
+    // Use min-height 44px touch targets, wrap on narrow screens
+    ui.style.cssText = [
+      'position:fixed',
+      'right:14px',
+      'top:10px',
+      'z-index:6',
+      'display:flex',
+      'gap:6px',
+      'flex-wrap:wrap',
+      'max-width:58vw',
+      'justify-content:flex-end',
+      'align-items:flex-start',
+    ].join(';');
     uiDiv = ui;
 
-    const btnStyle = 'background:#16203a;color:#dfe8ff;border:1px solid #38507e;border-radius:8px;padding:8px 12px;font:bold 12px system-ui;cursor:pointer;letter-spacing:.3px;box-shadow:0 2px 8px #0007';
+    // min-height 44px for touch targets
+    const btnStyle = [
+      'background:#16203a',
+      'color:#dfe8ff',
+      'border:1px solid #38507e',
+      'border-radius:8px',
+      'padding:10px 12px',
+      'min-height:44px',
+      'font:bold 12px system-ui',
+      'cursor:pointer',
+      'letter-spacing:.3px',
+      'box-shadow:0 2px 8px #0007',
+      'touch-action:manipulation',
+      '-webkit-tap-highlight-color:transparent',
+    ].join(';');
 
     function makeBtn(text: string, extraStyle: string, title: string): HTMLButtonElement {
       const btn = document.createElement('button');
       btn.textContent = text; btn.title = title;
       btn.style.cssText = btnStyle + ';' + extraStyle;
-      btn.onmouseenter = () => { btn.style.filter = 'brightness(1.2)'; };
-      btn.onmouseleave = () => { btn.style.filter = ''; };
+      btn.addEventListener('pointerenter', () => { btn.style.filter = 'brightness(1.2)'; });
+      btn.addEventListener('pointerleave', () => { btn.style.filter = ''; });
       return btn;
     }
 
@@ -1492,8 +1579,11 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
 
   // ---- INPUT ----
   function pixelUnderMouse(mx: number, my: number): number {
-    const { cell, panelW } = builderGeom();
-    if (mx > W - panelW) return -1;
+    const geomP = builderGeom();
+    // Exclude panel area
+    if (!geomP.portraitMode && mx > W - geomP.panelW) return -1;
+    if (geomP.portraitMode && my > H - geomP.stripH) return -1;
+    const { cell } = geomP;
     for (let i = 0; i < build.length; i++) {
       const p = build[i]!; const s = gridToScreen(p.gx, p.gy);
       if (mx >= s.x - cell / 2 && mx <= s.x + cell / 2 && my >= s.y - cell / 2 && my <= s.y + cell / 2) return i;
@@ -1504,8 +1594,10 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   function updateBuilderHover(): void {
     hoverPixIdx = -1; hoverCell = null;
     if (mouseX < 0) return;
-    const { panelW } = builderGeom();
-    if (mouseX > W - panelW) return;
+    const geomH = builderGeom();
+    // Don't hover in panel area
+    if (!geomH.portraitMode && mouseX > W - geomH.panelW) return;
+    if (geomH.portraitMode && mouseY > H - geomH.stripH) return;
     hoverPixIdx = pixelUnderMouse(mouseX, mouseY);
     hoverCell = screenToGrid(mouseX, mouseY);
   }
@@ -1517,16 +1609,88 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     for (const r of invHit.rarities) { if (inRect(mx, my, r)) { invRarity = r.k; invScroll = 0; return true; } }
     for (const sn of invHit.sorts) { if (inRect(mx, my, sn)) { invSort = sn.k; return true; } }
     for (const en of invHit.entries) { if (inRect(mx, my, en)) { selectedType = en.k; return true; } }
-    const { panelW } = builderGeom();
-    if (mx > W - panelW) return true;
+    const geomI = builderGeom();
+    // Consume clicks that land in the panel area (but weren't on a specific element)
+    if (!geomI.portraitMode && mx > W - geomI.panelW) return true;
+    if (geomI.portraitMode && my > H - geomI.stripH) return true;
     return false;
   }
 
-  function onMouseMove(e: MouseEvent): void { mouseX = e.clientX; mouseY = e.clientY; }
-  function onMouseLeave(): void { mouseX = -1; mouseY = -1; }
+  // ---- POINTER (mouse + touch) input ----
+  // Touch drag-to-scroll inventory: track pointer state
+  let _bPtrDown = false;
+  let _bPtrId = -1;
+  let _bPdX = -1, _bPdY = -1;    // pointer-down position
+  let _bLastY = -1;               // last Y for drag-scroll velocity
+  let _bDragging = false;         // true once drag threshold passed
+  const DRAG_THRESHOLD = 8;       // px before we treat as drag
+
+  function isInInventoryArea(mx: number, my: number): boolean {
+    const geom = builderGeom();
+    if (geom.portraitMode) {
+      return my > H - geom.stripH;
+    }
+    return mx > W - geom.panelW;
+  }
+
+  function onPointerMove(e: PointerEvent): void {
+    if (e.pointerId !== _bPtrId && _bPtrDown) return; // ignore other touches
+    mouseX = e.clientX; mouseY = e.clientY;
+    if (_bPtrDown && _bPdX >= 0) {
+      const dy = e.clientY - _bPdY;
+      const dx = e.clientX - _bPdX;
+      if (!_bDragging && (dx * dx + dy * dy) > DRAG_THRESHOLD * DRAG_THRESHOLD) {
+        _bDragging = true;
+      }
+      if (_bDragging && isInInventoryArea(_bPdX, _bPdY)) {
+        const delta = _bLastY - e.clientY;
+        invScroll += delta;
+        _bLastY = e.clientY;
+        e.preventDefault();
+      }
+    }
+  }
+  function onPointerLeave(): void { mouseX = -1; mouseY = -1; }
+  function onPointerDown(e: PointerEvent): void {
+    if (_bPtrDown) return; // single-touch only
+    _bPtrDown = true;
+    _bPtrId = e.pointerId;
+    _bPdX = e.clientX; _bPdY = e.clientY;
+    _bLastY = e.clientY;
+    _bDragging = false;
+    e.preventDefault();
+  }
+  function onPointerUp(e: PointerEvent): void {
+    if (e.pointerId !== _bPtrId) return;
+    const wasDragging = _bDragging;
+    _bPtrDown = false; _bPtrId = -1; _bDragging = false;
+    e.preventDefault();
+    if (wasDragging) return; // drag-scroll, not a tap
+    const mx = e.clientX, my = e.clientY;
+    // Verify it was a tap (didn't travel far)
+    const dx = mx - _bPdX, dy = my - _bPdY;
+    if (dx * dx + dy * dy > 400) return;
+    _bPdX = -1; _bPdY = -1;
+    // --- same logic as original onCanvasClick ---
+    if (showCodex) { showCodex = false; return; }
+    if (inRect(mx, my, fightBtnRect)) {
+      if (build.length > 1) opts.onFight(build.map(p => ({ ...p })));
+      else toast('Спершу побудуй героя (постав куби)', '#e3b341');
+      return;
+    }
+    if (handleInventoryClick(mx, my)) return;
+    if (statHit.detail && inRect(mx, my, statHit.detail)) { detailExpanded = !detailExpanded; return; }
+    const pk = presetHit(mx, my); if (pk) { loadPreset(pk); return; }
+    // Grid interactions only outside the inventory area
+    if (!isInInventoryArea(mx, my)) {
+      const idx = pixelUnderMouse(mx, my);
+      if (idx >= 0) { removePixel(idx); return; }
+      const { gx, gy } = screenToGrid(mx, my);
+      placePixel(gx, gy);
+    }
+  }
   function onWheel(e: WheelEvent): void {
-    const { panelW } = builderGeom();
-    if (mouseX > W - panelW) { invScroll += e.deltaY * 0.5; }
+    if (isInInventoryArea(mouseX, mouseY)) { invScroll += e.deltaY * 0.5; }
   }
   function onKeyDown(e: KeyboardEvent): void {
     if (invSearchFocus) {
@@ -1541,28 +1705,13 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     if (e.key === 'b' || e.key === 'B') { showAllBonds = !showAllBonds; }
     if (e.key === 'c' || e.key === 'C') { showCodex = !showCodex; }
   }
-  function onCanvasClick(e: MouseEvent): void {
-    const mx = e.clientX, my = e.clientY;
-    if (showCodex) { showCodex = false; return; }
-    if (inRect(mx, my, fightBtnRect)) {
-      if (build.length > 1) opts.onFight(build.map(p => ({ ...p })));
-      else toast('Спершу побудуй героя (постав куби)', '#e3b341');
-      return;
-    }
-    if (handleInventoryClick(mx, my)) return;
-    if (statHit.detail && inRect(mx, my, statHit.detail)) { detailExpanded = !detailExpanded; return; }
-    const pk = presetHit(mx, my); if (pk) { loadPreset(pk); return; }
-    const idx = pixelUnderMouse(mx, my);
-    if (idx >= 0) { removePixel(idx); return; }
-    const { gx, gy } = screenToGrid(mx, my);
-    placePixel(gx, gy);
-  }
   function setupInput(): void {
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseleave', onMouseLeave);
+    cv.addEventListener('pointermove', onPointerMove, { passive: false });
+    cv.addEventListener('pointerleave', onPointerLeave);
+    cv.addEventListener('pointerdown', onPointerDown, { passive: false });
+    cv.addEventListener('pointerup', onPointerUp, { passive: false });
     window.addEventListener('wheel', onWheel, { passive: true });
     window.addEventListener('keydown', onKeyDown);
-    cv.addEventListener('click', onCanvasClick);
   }
 
   // ---- DRAW BUILDER (verbatim from poc lines 2504-2516) ----
@@ -1626,10 +1775,11 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     cv.remove();
     if (uiDiv) uiDiv.remove();
     window.removeEventListener('resize', resize);
-    window.removeEventListener('mousemove', onMouseMove);
-    window.removeEventListener('mouseleave', onMouseLeave);
+    cv.removeEventListener('pointermove', onPointerMove);
+    cv.removeEventListener('pointerleave', onPointerLeave);
+    cv.removeEventListener('pointerdown', onPointerDown);
+    cv.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('wheel', onWheel);
     window.removeEventListener('keydown', onKeyDown);
-    cv.removeEventListener('click', onCanvasClick);
   };
 }
