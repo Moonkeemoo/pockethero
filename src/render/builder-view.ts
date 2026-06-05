@@ -483,6 +483,9 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
 
   const ctx = cv.getContext('2d')!;
   let W = 0, H = 0, DPR = 1;
+  // Declared early — resize() (called during init) calls repositionUiDiv() which
+  // reads uiDiv; a later `let` would be in the temporal dead zone (blank screen).
+  let uiDiv: HTMLDivElement | null = null;
 
   function resize(): void {
     DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
@@ -1568,7 +1571,7 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
 
   // ---- ACTION BUTTONS (HTML overlay) ----
   // Note: "+Рівень" and "Відкрити лут" removed — level/loot come only from fights now.
-  let uiDiv: HTMLDivElement | null = null;
+  // uiDiv is declared near the top of startBuilder (before resize) to avoid a TDZ error.
 
   /** Apply portrait vs desktop CSS to uiDiv based on current W. Called on create and resize. */
   function repositionUiDiv(): void {
