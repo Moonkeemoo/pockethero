@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { makeFighter } from '../src/sim/fighter';
 import { applyStatus, tickStatuses, speedMult } from '../src/sim/status';
 import { makeBus } from '../src/sim/events';
-import { HERO_BUILD } from '../src/builds/presets';
+import { HERO_BUILD, BRUTE_BUILD } from '../src/builds/presets';
+import { createFight, stepFight, runToEnd } from '../src/sim/index';
+import { makeRng } from '../src/sim/rng';
 
 describe('fighter + status', () => {
   it('builds a fighter from a build', () => {
@@ -81,5 +83,31 @@ describe('fighter + status', () => {
     const slow = f.statuses.find((s) => s.id === 'slow');
     expect(slow?.remaining).toBeGreaterThan(4);  // refreshed back to 5
     expect(f.statuses.filter((s) => s.id === 'slow').length).toBe(1); // no duplicate
+  });
+});
+
+describe('combat loop', () => {
+  it('runs a fight to a decisive K.O. within a bounded number of steps', () => {
+    const bus = makeBus();
+    const rng = makeRng(1337);
+    const state = createFight(
+      { id: 'a', name: 'Герой', side: -1, build: HERO_BUILD },
+      { id: 'b', name: 'Громило', side: 1, build: BRUTE_BUILD },
+    );
+    const result = runToEnd(state, rng, bus, { maxSteps: 60 * 120 });
+    expect(result.phase).toBe('done');
+    expect(result.winner).not.toBeNull();
+    expect(bus.drain().some((e) => e.type === 'ko')).toBe(true);
+  });
+  it('a single fixed step advances time by exactly DT', () => {
+    const bus = makeBus();
+    const rng = makeRng(1);
+    const s = createFight(
+      { id: 'a', name: 'A', side: -1, build: HERO_BUILD },
+      { id: 'b', name: 'B', side: 1, build: HERO_BUILD },
+    );
+    const t0 = s.t;
+    stepFight(s, rng, bus);
+    expect(s.t).toBeCloseTo(t0 + 1 / 60, 6);
   });
 });
