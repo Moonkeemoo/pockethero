@@ -1,6 +1,6 @@
 import type { Stats } from '../derive/deriveStats';
 
-export interface StatusInstance { id: string; remaining: number; magnitude: number }
+export interface StatusInstance { id: string; remaining: number; magnitude: number; tickT: number }
 
 export interface Fighter {
   id: string;

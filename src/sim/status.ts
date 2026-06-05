@@ -23,10 +23,6 @@ const STATUS_DEF: Record<string, StatusDef> = {
   shock: { dur: 3.0, tick: 0,   dmg: 0, dmgTakenMul: 1.5 },
 };
 
-// Per-instance tick accumulator (not exposed on the public interface).
-// The WeakMap is keyed on the StatusInstance object itself.
-const tickAccum = new WeakMap<StatusInstance, number>();
-
 // ---------------------------------------------------------------------------
 // applyStatus — port of poc applyStatus(tgt, key)
 // Add a new StatusInstance or refresh the duration if already present.
@@ -45,12 +41,8 @@ export function applyStatus(
     // POC: refresh duration, keep same instance (existing.dur = def.dur)
     existing.remaining = duration;
   } else {
-    const inst: StatusInstance = { id, remaining: duration, magnitude };
-    // Initialise tick accumulator for ticking statuses
     const def = STATUS_DEF[id];
-    if (def && def.tick > 0) {
-      tickAccum.set(inst, def.tick);
-    }
+    const inst: StatusInstance = { id, remaining: duration, magnitude, tickT: def?.tick ?? 0 };
     f.statuses.push(inst);
   }
   bus.emit({ type: 'status-applied', target: f.id, status: id, t: 0 });
@@ -71,20 +63,17 @@ export function tickStatuses(f: Fighter, dt: number, bus: EventBus): void {
 
     // Discrete tick (burn): tickT -= dt; when tickT <= 0 deal flat dmg, reset
     if (def.tick > 0) {
-      let tickT = tickAccum.get(s) ?? def.tick;
-      tickT -= dt;
-      if (tickT <= 0 && f.hp > 0) {
-        tickT += def.tick;          // reset interval (POC: s.tickT += def.tick)
+      s.tickT -= dt;
+      if (s.tickT <= 0 && f.hp > 0) {
+        s.tickT += def.tick;        // reset interval (POC: s.tickT += def.tick)
         const dmg = def.dmg;        // flat 6 for burn
         f.hp = Math.max(0, f.hp - dmg);
         bus.emit({ type: 'status-tick', target: f.id, status: s.id, amount: dmg, t: 0 });
       }
-      tickAccum.set(s, tickT);
     }
 
     // Drop expired status (POC: if(s.dur<=0) splice)
     if (s.remaining <= 0) {
-      tickAccum.delete(s);
       f.statuses.splice(i, 1);
     }
   }
