@@ -35,6 +35,7 @@ export function applyStatus(
   duration: number,
   magnitude: number,
   bus: EventBus,
+  t: number = 0,
 ): void {
   const def = STATUS_DEF[id];
   // When duration/magnitude are 0 (move-style apply), fall back to canonical STATUS_DEF values
@@ -48,14 +49,14 @@ export function applyStatus(
     const inst: StatusInstance = { id, remaining: resolvedDur, magnitude: resolvedMag, tickT: def?.tick ?? 0 };
     f.statuses.push(inst);
   }
-  bus.emit({ type: 'status-applied', target: f.id, status: id, t: 0 });
+  bus.emit({ type: 'status-applied', target: f.id, status: id, t });
 }
 
 // ---------------------------------------------------------------------------
 // tickStatuses — port of the inner status loop in poc simStep(dt)
 // Decrements remaining; fires discrete ticks for burn; drops expired statuses.
 // ---------------------------------------------------------------------------
-export function tickStatuses(f: Fighter, dt: number, bus: EventBus): void {
+export function tickStatuses(f: Fighter, dt: number, bus: EventBus, t: number = 0): void {
   for (let i = f.statuses.length - 1; i >= 0; i--) {
     const s: StatusInstance | undefined = f.statuses[i];
     if (s === undefined) continue;
@@ -71,7 +72,7 @@ export function tickStatuses(f: Fighter, dt: number, bus: EventBus): void {
         s.tickT += def.tick;        // reset interval (POC: s.tickT += def.tick)
         const dmg = def.dmg;        // flat 6 for burn
         f.hp = Math.max(0, f.hp - dmg);
-        bus.emit({ type: 'status-tick', target: f.id, status: s.id, amount: dmg, t: 0 });
+        bus.emit({ type: 'status-tick', target: f.id, status: s.id, amount: dmg, t });
       }
     }
 
@@ -86,8 +87,8 @@ export function tickStatuses(f: Fighter, dt: number, bus: EventBus): void {
 // applyStatusFromDef — convenience wrapper that applies a status using the
 // canonical STATUS_DEF duration/magnitude (i.e. the move-apply path).
 // ---------------------------------------------------------------------------
-export function applyStatusFromDef(f: Fighter, id: string, bus: EventBus): void {
-  applyStatus(f, id, 0, 0, bus);
+export function applyStatusFromDef(f: Fighter, id: string, bus: EventBus, t: number = 0): void {
+  applyStatus(f, id, 0, 0, bus, t);
 }
 
 // ---------------------------------------------------------------------------

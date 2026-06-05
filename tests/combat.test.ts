@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { makeFighter } from '../src/sim/fighter';
 import { applyStatus, tickStatuses, speedMult } from '../src/sim/status';
 import { makeBus } from '../src/sim/events';
-import { HERO_BUILD, BRUTE_BUILD } from '../src/builds/presets';
+import { HERO_BUILD, BRUTE_BUILD, MAGE_BUILD } from '../src/builds/presets';
 import { createFight, stepFight, runToEnd } from '../src/sim/index';
 import { makeRng } from '../src/sim/rng';
 
@@ -118,6 +118,20 @@ describe('combat loop', () => {
     expect(result.winner).not.toBeNull();
     expect(bus.drain().some((e) => e.type === 'ko')).toBe(true);
   });
+  it('status events carry the sim time, not 0', () => {
+    const bus = makeBus();
+    const s = createFight(
+      { id: 'a', name: 'A', side: -1, build: HERO_BUILD },
+      { id: 'b', name: 'B', side: 1, build: MAGE_BUILD },
+    );
+    runToEnd(s, makeRng(1337), bus, { maxSteps: 60 * 120 });
+    const statusEvents = bus.drain().filter((e) => e.type === 'status-applied' || e.type === 'status-tick');
+    // HERO has ember (fire->burn), MAGE has frost/spark; at least one status should fire
+    if (statusEvents.length > 0) {
+      expect(statusEvents.every((e) => e.t > 0)).toBe(true);
+    }
+  });
+
   it('a single fixed step advances time by exactly DT', () => {
     const bus = makeBus();
     const rng = makeRng(1);

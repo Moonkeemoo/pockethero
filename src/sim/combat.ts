@@ -4,7 +4,7 @@ import type { Rng } from './rng';
 import type { Build } from '../derive/types';
 import { makeFighter } from './fighter';
 import { MOVES } from '../data/moves';
-import { tickStatuses, speedMult, applyStatus, applyStatusFromDef, STATUS_DEF } from './status';
+import { tickStatuses, speedMult, applyStatusFromDef, STATUS_DEF } from './status';
 
 export const DT = 1 / 60; // fixed logical timestep (design P2)
 
@@ -157,7 +157,7 @@ function applyHitEffects(
 
   // --- status apply (poc line 895) ---
   if (move.status) {
-    applyStatusFromDef(tgt, move.status, bus);
+    applyStatusFromDef(tgt, move.status, bus, t);
   }
 }
 
@@ -262,7 +262,7 @@ export function stepFight(s: FightState, rng: Rng, bus: EventBus): void {
     }
 
     // --- status ticks (burn etc.) ---
-    tickStatuses(f, DT, bus);
+    tickStatuses(f, DT, bus, s.t);
 
     // --- check burn/tick KO ---
     if (f.hp <= 0) {
