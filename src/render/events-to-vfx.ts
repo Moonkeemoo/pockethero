@@ -16,7 +16,7 @@ export function mapEventToVfx(e: CombatEvent, theme: Theme): VfxIntent[] {
       return [
         { kind: 'flash', target: e.target, color: e.crit ? 0xffffff : 0xfff2cc, frames: e.crit ? 4 : 3 },
         { kind: 'shake', amp: (2 + 5 * heavy) * critK * ceil, ms: 150 },
-        { kind: 'hitstop', frames: Math.round((e.crit ? 8 : 4 + 4 * heavy) * ceil) },
+        { kind: 'hitstop', frames: Math.round((4 + 4 * heavy) * critK * ceil) },
         { kind: 'debris', target: e.target, count: Math.round((6 + 8 * heavy) * ceil), color: 0xffffff },
         { kind: 'floating', target: e.target, text: String(e.amount), color: e.crit ? 0xffd84a : 0xffffff, crit: e.crit },
       ];

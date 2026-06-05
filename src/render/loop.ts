@@ -9,7 +9,7 @@ export const MAX_STEPS = 5; // cap steps per frame (spiral-of-death guard)
 export interface Advance { acc: number; steps: number; alpha: number }
 
 export function advance(acc: number, realDt: number): Advance {
-  let a = acc + Math.max(0, realDt);
+  let a = Math.max(0, acc) + Math.max(0, realDt);
   let steps = 0;
   while (a >= DT && steps < MAX_STEPS) { a -= DT; steps++; }
   if (steps === MAX_STEPS) a = a % DT;        // drop backlog beyond the cap

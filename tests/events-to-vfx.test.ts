@@ -32,4 +32,20 @@ describe('mapEventToVfx', () => {
     const heal = intents({ type: 'heal', target: 'p1', amount: 5, t: 1 });
     expect(heal).toEqual([{ kind: 'heal', target: 'p1', amount: 5 }]);
   });
+
+  it('on a heavy hit, a crit still gives more hitstop than a normal hit', () => {
+    const heavy = { type: 'hit', source: 'p1', target: 'p2', amount: 40, crit: false, t: 1 } as const;
+    const heavyCrit = { ...heavy, crit: true } as const;
+    const stop = (e: CombatEvent) => (mapEventToVfx(e, routeB).find(i => i.kind === 'hitstop') as { frames: number }).frames;
+    expect(stop(heavyCrit)).toBeGreaterThan(stop(heavy));
+  });
+
+  it('a higher vfx ceiling scales shake amplitude up for the same hit', () => {
+    const e = { type: 'hit', source: 'p1', target: 'p2', amount: 12, crit: false, t: 1 } as const;
+    const amp = (theme: typeof routeB) => (mapEventToVfx(e, theme).find(i => i.kind === 'shake') as { amp: number }).amp;
+    const vs = { ...routeB, vfxCeiling: 'vsurvivors' as const };
+    const cel = { ...routeB, vfxCeiling: 'celeste' as const };
+    expect(amp(vs)).toBeGreaterThan(amp(routeB));
+    expect(amp(routeB)).toBeGreaterThan(amp(cel));
+  });
 });
