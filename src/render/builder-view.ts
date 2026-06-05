@@ -819,12 +819,18 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   // ---- DRAW ARENA (verbatim from poc lines 1521-1539) ----
   function drawArena(): void {
     const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#141b27'); g.addColorStop(0.55, '#10161f'); g.addColorStop(1, '#080b11');
+    g.addColorStop(0, '#121826'); g.addColorStop(0.55, '#0e141d'); g.addColorStop(1, '#070a10');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-    const ground = H * 0.72;
-    const hg = ctx.createRadialGradient(W * 0.5, ground, 10, W * 0.5, ground, W * 0.7);
-    hg.addColorStop(0, 'rgba(60,90,140,0.18)'); hg.addColorStop(1, 'rgba(0,0,0,0)');
+    // Subtle center glow (build area ambient light)
+    const geomA = builderGeom();
+    const cxA = geomA.cx, cyA = geomA.cy;
+    const hg = ctx.createRadialGradient(cxA, cyA, 10, cxA, cyA, Math.min(W, H) * 0.55);
+    hg.addColorStop(0, 'rgba(50,80,140,0.10)'); hg.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = hg; ctx.fillRect(0, 0, W, H);
+    // Edge vignette
+    const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.72);
+    vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.35)');
+    ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
   }
 
   // ---- DRAW BOND (verbatim from poc lines 2031-2046) ----
@@ -896,13 +902,19 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
         const s = gridToScreen(gx, gy);
         const x = s.x - cell / 2, y = s.y - cell / 2, w = cell - 1, hh = cell - 1;
         if (cellUnlocked(gx, gy)) {
-          ctx.strokeStyle = 'rgba(90,120,170,0.12)'; ctx.lineWidth = 1;
-          ctx.strokeRect(x, y, w, hh);
+          // Subtle inner glow on unlocked cells — warmer near center
+          const dist = Math.max(Math.abs(gx), Math.abs(gy));
+          if (dist === 0) {
+            ctx.fillStyle = 'rgba(100,130,180,0.06)'; ctx.fillRect(x, y, w, hh);
+          }
+          ctx.strokeStyle = 'rgba(100,130,180,0.14)'; ctx.lineWidth = 0.8;
+          ctx.strokeRect(x + 0.5, y + 0.5, w - 1, hh - 1);
         } else {
-          ctx.fillStyle = 'rgba(20,26,36,0.55)'; ctx.fillRect(x, y, w, hh);
-          ctx.strokeStyle = 'rgba(60,76,100,0.35)'; ctx.lineWidth = 1;
+          ctx.fillStyle = 'rgba(12,16,24,0.7)'; ctx.fillRect(x, y, w, hh);
+          ctx.strokeStyle = 'rgba(45,60,88,0.4)'; ctx.lineWidth = 0.8;
+          // diagonal hatch for locked cells
           ctx.beginPath();
-          for (let o = -hh; o < w; o += 6) {
+          for (let o = -hh; o < w; o += 7) {
             ctx.moveTo(x + Math.max(0, o), y + Math.max(0, -o));
             ctx.lineTo(x + Math.min(w, o + hh), y + Math.min(hh, hh - o));
           }
@@ -911,12 +923,16 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
       }
     }
 
-    // unlocked-region border
+    // unlocked-region border — subtle double glow
     {
       const r = ringUnlocked;
       const a = gridToScreen(-r, -r), b2 = gridToScreen(r, r);
-      ctx.strokeStyle = 'rgba(120,160,210,0.4)'; ctx.lineWidth = 2;
-      ctx.strokeRect(a.x - cell / 2, a.y - cell / 2, (2 * r + 1) * cell, (2 * r + 1) * cell);
+      const rw = (2 * r + 1) * cell;
+      ctx.strokeStyle = 'rgba(80,120,190,0.15)'; ctx.lineWidth = 4;
+      ctx.strokeRect(a.x - cell / 2 - 1, a.y - cell / 2 - 1, rw + 2, rw + 2);
+      ctx.strokeStyle = 'rgba(140,180,240,0.45)'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(a.x - cell / 2, a.y - cell / 2, rw, rw);
+      void b2;
     }
 
     drawShapeHighlights();
@@ -993,17 +1009,20 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
       const dim = (hoverPixIdx >= 0 && hoverType3 && p.type !== hoverType3) ? INSPECT_DIM : 1;
       ctx.globalAlpha = dim;
       ctx.fillStyle = lighten(base, Math.min(0.6, bm.bright));
+      // Slightly rounded feel — use inset fill with a subtle inner top-highlight
       ctx.fillRect(s.x - w / 2, s.y - w / 2, w, w);
-      ctx.fillStyle = 'rgba(255,255,255,0.10)';
-      ctx.fillRect(s.x - w / 2, s.y - w / 2, w, Math.max(1, w * 0.18));
+      ctx.fillStyle = 'rgba(255,255,255,0.13)';
+      ctx.fillRect(s.x - w / 2, s.y - w / 2, w, Math.max(1, w * 0.22));
+      // Rarity corner pip — bottom-right, slightly larger
       const rc = RARITY_COL[CUBES[p.type]?.rarity ?? 'common']!;
-      ctx.fillStyle = rc; ctx.fillRect(s.x + w / 2 - 5, s.y - w / 2 + 1, 4, 4);
+      ctx.fillStyle = rc; ctx.fillRect(s.x + w / 2 - 6, s.y + w / 2 - 6, 5, 5);
       const cube = CUBES[p.type];
       if (cell >= GLYPH_MIN_CELL && cube) {
         drawGlyph(ctx, cube.glyph, s.x, s.y, w, cube.tint, dim * 0.95);
       }
       if (p.type === 'core') {
-        ctx.globalAlpha = dim; ctx.strokeStyle = '#fff3c0'; ctx.lineWidth = 2;
+        ctx.globalAlpha = dim * (0.7 + 0.3 * Math.sin(t * 2.4));
+        ctx.strokeStyle = '#fff3c0'; ctx.lineWidth = 2;
         ctx.strokeRect(s.x - w / 2, s.y - w / 2, w, w);
       }
       ctx.globalAlpha = 1;
@@ -1011,35 +1030,61 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
 
     if (hoverPixIdx >= 0) {
       const p = build[hoverPixIdx]!; const s = gridToScreen(p.gx, p.gy);
-      ctx.strokeStyle = p.type === 'core' ? '#888' : '#ff6b6b';
-      ctx.lineWidth = 2; ctx.strokeRect(s.x - cell / 2, s.y - cell / 2, cell - 2, cell - 2);
+      // Bright highlight ring for hovered/removable pixel
+      ctx.strokeStyle = p.type === 'core' ? '#aaa' : '#ff6060';
+      ctx.lineWidth = 2.5; ctx.strokeRect(s.x - cell / 2 + 1, s.y - cell / 2 + 1, cell - 4, cell - 4);
+      // Outer glow
+      ctx.globalAlpha = 0.25; ctx.strokeStyle = p.type === 'core' ? '#fff' : '#ff4040';
+      ctx.lineWidth = 5; ctx.strokeRect(s.x - cell / 2, s.y - cell / 2, cell - 2, cell - 2);
+      ctx.globalAlpha = 1;
     }
 
     // footer hint strip
     ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
     // Footer hint — hidden in portrait to save space (the bottom is the inventory strip)
     if (!isPortrait()) {
-      const hint = 'БІЛДЕР — обери куб справа · клік: поставити суміжно · клік по кубу: прибрати (повертає в інвентар)';
-      const status = 'кубів: ' + (build.length - 1) + '    масштаб(LOD): ' + (builderZoom).toFixed(2) + '× [ ]    обрано: ' + (CUBES[selectedType]?.name ?? '—');
-      ctx.font = 'bold 13px system-ui'; const hw = ctx.measureText(hint).width;
-      ctx.font = '11px system-ui';      const sw = ctx.measureText(status).width;
-      const bw = Math.max(hw, sw) + 22;
-      ctx.fillStyle = 'rgba(6,10,16,0.62)';
+      const selName = CUBES[selectedType]?.name ?? '—';
+      const selCol  = colorOfType(selectedType);
+      const status = '✦ ' + selName + '  ·  ' + (build.length - 1) + ' кубів  ·  [ ] масштаб';
+      ctx.font = '11px system-ui';
+      const sw = ctx.measureText(status).width;
+      const bw = sw + 28;
+      const bh = 28;
+      const bx = 12, by = H - 36;
+      ctx.fillStyle = 'rgba(8,12,20,0.78)';
       if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
         ctx.beginPath();
-        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void }).roundRect(10, H - 58, bw, 46, 8);
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void }).roundRect(bx, by, bw, bh, 6);
         ctx.fill();
-      } else ctx.fillRect(10, H - 58, bw, 46);
-      ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#9fb4d6';
-      ctx.fillText(hint, 21, H - 38);
-      ctx.font = '11px system-ui'; ctx.fillStyle = '#8fa2bf';
-      ctx.fillText(status, 21, H - 20);
+        ctx.strokeStyle = 'rgba(90,120,170,0.22)'; ctx.lineWidth = 1;
+        ctx.stroke();
+      } else {
+        ctx.fillRect(bx, by, bw, bh);
+      }
+      ctx.fillStyle = selCol; ctx.fillText('✦', bx + 10, by + 18);
+      ctx.font = '11px system-ui'; ctx.fillStyle = '#a0b4cc';
+      ctx.fillText(selName + '  ·  ' + (build.length - 1) + ' кубів  ·  [ ] масштаб', bx + 22, by + 18);
     } else {
-      // Portrait: show compact "обрано: XXX" status above the bottom strip
+      // Portrait: compact pill above the bottom strip showing selected cube
       const stripTop = H - portraitStripH();
       const selName = CUBES[selectedType]?.name ?? '—';
-      ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#9fb4d6'; ctx.textAlign = 'center';
-      ctx.fillText('Обрано: ' + selName + ' · кубів: ' + (build.length - 1), W / 2, stripTop - 6);
+      const selCol  = colorOfType(selectedType);
+      const label = selName + '  ·  ' + (build.length - 1) + ' кубів';
+      ctx.font = 'bold 11px system-ui';
+      const lw = ctx.measureText(label).width + 26;
+      const lx = W / 2 - lw / 2, ly = stripTop - 22;
+      ctx.fillStyle = 'rgba(8,12,20,0.84)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void }).roundRect(lx, ly, lw, 18, 9);
+        ctx.fill();
+        ctx.strokeStyle = selCol; ctx.lineWidth = 1; ctx.globalAlpha = 0.45; ctx.stroke();
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.fillRect(lx, ly, lw, 18);
+      }
+      ctx.fillStyle = selCol; ctx.textAlign = 'center';
+      ctx.fillText(label, W / 2, ly + 13);
       ctx.textAlign = 'left';
     }
   }
@@ -1048,199 +1093,472 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   function drawInventoryPanel(): void {
     const geom = builderGeom();
     // In portrait: panel spans full width at the bottom
-    const px = geom.portraitMode ? 8 : W - geom.panelW + 12;
-    const pw = geom.portraitMode ? W - 16 : geom.panelW - 24;
+    const px = geom.portraitMode ? 6 : W - geom.panelW + 10;
+    const pw = geom.portraitMode ? W - 12 : geom.panelW - 20;
     const L = rightPanelLayout();
-    const y = L.inv.boxTop + 26;
-    const panelH = L.inv.boxH - 26;
+    // Panel box dimensions
+    const panelBoxTop = L.inv.boxTop;
+    const panelBoxH   = L.inv.boxH;
     invHit.tabs.length = invHit.rarities.length = invHit.sorts.length = invHit.entries.length = 0;
     invHit.search = null;
-    ctx.fillStyle = 'rgba(8,12,20,0.66)'; ctx.fillRect(px - 8, y - 26, pw + 16, panelH + 26);
-    ctx.strokeStyle = 'rgba(90,120,170,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(px - 8, y - 26, pw + 16, panelH + 26);
-    ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#9fb4d6'; ctx.textAlign = 'left';
-    ctx.fillText('ІНВЕНТАР КУБІВ', px, y - 10);
 
-    // category tabs
-    ctx.font = 'bold 11px system-ui'; ctx.textBaseline = 'middle';
-    let tx = px, ty = y + 4;
-    const tabs: [string, string][] = [['all', 'Все'], ...CAT_ORDER.map(c => [c, CAT[c]!.ua] as [string, string])];
-    for (const [k, lbl] of tabs) {
-      const w = ctx.measureText(lbl).width + 12;
-      const sel = invTab === k;
-      ctx.fillStyle = sel ? '#2a3a5e' : 'rgba(22,32,58,0.7)'; ctx.fillRect(tx, ty, w, 18);
-      ctx.strokeStyle = sel ? '#7ea0d0' : '#38507e'; ctx.lineWidth = 1; ctx.strokeRect(tx, ty, w, 18);
-      ctx.fillStyle = sel ? '#fff' : '#aab6c6'; ctx.fillText(lbl, tx + 6, ty + 9);
-      invHit.tabs.push({ k, x: tx, y: ty, w, h: 18 });
-      tx += w + 5; if (tx + 50 > px + pw) { tx = px; ty += 22; }
+    // --- Panel background (semi-transparent dark card) ---
+    const rounding = 10;
+    ctx.fillStyle = geom.portraitMode ? 'rgba(7,10,18,0.92)' : 'rgba(8,12,20,0.72)';
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(px - 6, panelBoxTop, pw + 12, panelBoxH, rounding);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(90,120,175,0.28)'; ctx.lineWidth = 1;
+      ctx.stroke();
+    } else {
+      ctx.fillRect(px - 6, panelBoxTop, pw + 12, panelBoxH);
+      ctx.strokeStyle = 'rgba(90,120,175,0.28)'; ctx.lineWidth = 1;
+      ctx.strokeRect(px - 6, panelBoxTop, pw + 12, panelBoxH);
     }
-    let ry = ty + 26;
 
-    // rarity filter
-    ctx.font = '10px system-ui';
-    let rx = px;
-    ctx.fillStyle = '#7e90ac'; ctx.fillText('рід:', rx, ry + 8); rx += 26;
-    for (const [k, lbl] of [['all', 'усі'], ['common', 'зв'], ['rare', 'рід'], ['epic', 'еп'], ['legendary', 'лег']] as [string, string][]) {
-      const w = ctx.measureText(lbl).width + 10; const sel = invRarity === k;
-      ctx.fillStyle = sel ? 'rgba(60,80,120,0.9)' : 'rgba(20,28,44,0.7)'; ctx.fillRect(rx, ry, w, 16);
-      ctx.strokeStyle = sel ? (RARITY_COL[k] ?? '#7ea0d0') : '#324768'; ctx.lineWidth = 1; ctx.strokeRect(rx, ry, w, 16);
-      ctx.fillStyle = sel ? (RARITY_COL[k] ?? '#fff') : '#9aa6b8'; ctx.fillText(lbl, rx + 5, ry + 8);
-      invHit.rarities.push({ k, x: rx, y: ry, w, h: 16 }); rx += w + 4;
-    }
-    ry += 20;
-    rx = px; ctx.fillStyle = '#7e90ac'; ctx.fillText('сорт:', rx, ry + 8); rx += 30;
-    for (const [k, lbl] of [['rarity', 'за рідкістю'], ['cost', 'за вартістю'], ['name', 'за назвою']] as [string, string][]) {
-      const w = ctx.measureText(lbl).width + 10; const sel = invSort === k;
-      ctx.fillStyle = sel ? 'rgba(60,80,120,0.9)' : 'rgba(20,28,44,0.7)'; ctx.fillRect(rx, ry, w, 16);
-      ctx.strokeStyle = sel ? '#7ea0d0' : '#324768'; ctx.lineWidth = 1; ctx.strokeRect(rx, ry, w, 16);
-      ctx.fillStyle = sel ? '#fff' : '#9aa6b8'; ctx.fillText(lbl, rx + 5, ry + 8);
-      invHit.sorts.push({ k, x: rx, y: ry, w, h: 16 }); rx += w + 4;
-    }
-    ry += 20;
-    // search box
-    ctx.fillStyle = 'rgba(14,20,32,0.9)'; ctx.fillRect(px, ry, pw, 18);
-    ctx.strokeStyle = invSearchFocus ? '#7ea0d0' : '#324768'; ctx.lineWidth = 1; ctx.strokeRect(px, ry, pw, 18);
-    ctx.fillStyle = invSearch ? '#dfe8ff' : '#5f6f86';
-    ctx.fillText(invSearch ? invSearch + (invSearchFocus ? '|' : '') : 'пошук… (клік, друкуй)', px + 6, ry + 9);
-    invHit.search = { x: px, y: ry, w: pw, h: 18 };
-    ry += 26;
-
-    // entries grid — more columns on wide portrait strip
-    const list = filteredInventory();
-    const cols = geom.portraitMode ? Math.max(2, Math.floor(pw / 140)) : 2;
-    const ew = (pw - (cols - 1) * 6) / cols, eh = 44;
-    const listTop = ry;
-    const visibleH = (y - 26 + panelH) - listTop - 4;
-    const rows = Math.ceil(list.length / cols);
-    const maxScroll = Math.max(0, rows * eh - visibleH);
-    invScroll = Math.max(0, Math.min(maxScroll, invScroll));
-    ctx.save();
-    ctx.beginPath(); ctx.rect(px - 8, listTop - 2, pw + 16, visibleH + 4); ctx.clip();
+    // --- Header ---
+    const headerH = 28;
+    const headerY = panelBoxTop + 4;
+    ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#6a88b8'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText('ІНВЕНТАР', px + 2, headerY + headerH / 2);
     ctx.textBaseline = 'alphabetic';
+
+    // --- Category tabs (pill style) ---
+    const tabsY = panelBoxTop + headerH + 8;
+    const tabH = 22;
+    ctx.font = 'bold 10px system-ui'; ctx.textBaseline = 'middle';
+    let tx = px, ty = tabsY;
+    const tabs: [string, string][] = [['all', 'Всі'], ...CAT_ORDER.map(c => [c, CAT[c]!.ua] as [string, string])];
+    for (const [k, lbl] of tabs) {
+      const tabW = ctx.measureText(lbl).width + 14;
+      const sel = invTab === k;
+      const tabCol = k !== 'all' ? (CAT[k]?.col ?? '#7ea0d0') : '#7ea0d0';
+      if (tx + tabW > px + pw + 2) { tx = px; ty += tabH + 4; }
+      ctx.globalAlpha = sel ? 1 : 0.7;
+      ctx.fillStyle = sel ? (k !== 'all' ? tabCol + '33' : 'rgba(50,80,140,0.5)') : 'rgba(18,26,42,0.6)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(tx, ty, tabW, tabH, tabH / 2);
+        ctx.fill();
+        ctx.strokeStyle = sel ? tabCol : 'rgba(60,80,120,0.5)';
+        ctx.lineWidth = sel ? 1.5 : 0.8;
+        ctx.stroke();
+      } else {
+        ctx.fillRect(tx, ty, tabW, tabH);
+        ctx.strokeStyle = sel ? tabCol : '#324768'; ctx.lineWidth = 1; ctx.strokeRect(tx, ty, tabW, tabH);
+      }
+      ctx.fillStyle = sel ? '#fff' : '#8fa0b8';
+      ctx.fillText(lbl, tx + tabW / 2 - ctx.measureText(lbl).width / 2, ty + tabH / 2 + 1);
+      invHit.tabs.push({ k, x: tx, y: ty, w: tabW, h: tabH });
+      tx += tabW + 5;
+      ctx.globalAlpha = 1;
+    }
+    let ry = ty + tabH + 8;
+
+    // --- Filter row: rarity + sort (compact, single row) ---
+    ctx.font = '9px system-ui'; ctx.textBaseline = 'middle';
+    let rx = px;
+    // Rarity pills
+    for (const [k, lbl] of [['all', 'Всі'], ['common', 'Зв'], ['rare', 'Рід'], ['epic', 'Еп'], ['leg', 'Лег']] as [string, string][]) {
+      const rk = k === 'leg' ? 'legendary' : k;
+      const rw = ctx.measureText(lbl).width + 10; const sel = invRarity === rk;
+      const rcol = rk !== 'all' ? (RARITY_COL[rk] ?? '#7ea0d0') : '#7ea0d0';
+      ctx.globalAlpha = sel ? 1 : 0.55;
+      ctx.fillStyle = sel ? 'rgba(40,60,110,0.7)' : 'rgba(16,22,38,0.6)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(rx, ry, rw, 18, 9);
+        ctx.fill();
+        ctx.strokeStyle = sel ? rcol : 'rgba(50,70,110,0.5)'; ctx.lineWidth = sel ? 1.5 : 0.8; ctx.stroke();
+      } else {
+        ctx.fillRect(rx, ry, rw, 18);
+        ctx.strokeStyle = sel ? rcol : '#324768'; ctx.lineWidth = 1; ctx.strokeRect(rx, ry, rw, 18);
+      }
+      ctx.fillStyle = sel ? rcol : '#7a8a9e';
+      ctx.fillText(lbl, rx + rw / 2 - ctx.measureText(lbl).width / 2, ry + 9);
+      invHit.rarities.push({ k: rk, x: rx, y: ry, w: rw, h: 18 }); rx += rw + 4;
+      ctx.globalAlpha = 1;
+    }
+    // Sort pills — right-aligned
+    const sortDefs: [string, string][] = [['rarity', 'Рід'], ['cost', 'Ціна'], ['name', 'A–Z']];
+    let srx = px + pw;
+    for (let si = sortDefs.length - 1; si >= 0; si--) {
+      const [k, lbl] = sortDefs[si]!;
+      const sw2 = ctx.measureText(lbl).width + 10; const sel = invSort === k;
+      srx -= sw2 + 4;
+      ctx.globalAlpha = sel ? 1 : 0.55;
+      ctx.fillStyle = sel ? 'rgba(40,60,110,0.7)' : 'rgba(16,22,38,0.6)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(srx, ry, sw2, 18, 9);
+        ctx.fill();
+        ctx.strokeStyle = sel ? '#7ea0d0' : 'rgba(50,70,110,0.5)'; ctx.lineWidth = sel ? 1.5 : 0.8; ctx.stroke();
+      } else {
+        ctx.fillRect(srx, ry, sw2, 18);
+        ctx.strokeStyle = sel ? '#7ea0d0' : '#324768'; ctx.lineWidth = 1; ctx.strokeRect(srx, ry, sw2, 18);
+      }
+      ctx.fillStyle = sel ? '#cde' : '#7a8a9e';
+      ctx.fillText(lbl, srx + sw2 / 2 - ctx.measureText(lbl).width / 2, ry + 9);
+      invHit.sorts.push({ k, x: srx, y: ry, w: sw2, h: 18 });
+      ctx.globalAlpha = 1;
+    }
+    ry += 24;
+
+    // --- Search box (rounded pill) ---
+    const searchH = 22;
+    ctx.fillStyle = invSearchFocus ? 'rgba(20,30,56,0.9)' : 'rgba(12,18,32,0.85)';
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(px, ry, pw, searchH, searchH / 2);
+      ctx.fill();
+      ctx.strokeStyle = invSearchFocus ? '#5a82d0' : 'rgba(60,80,130,0.5)'; ctx.lineWidth = 1; ctx.stroke();
+    } else {
+      ctx.fillRect(px, ry, pw, searchH);
+      ctx.strokeStyle = invSearchFocus ? '#7ea0d0' : '#324768'; ctx.lineWidth = 1; ctx.strokeRect(px, ry, pw, searchH);
+    }
+    ctx.font = '10px system-ui'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = invSearch ? '#dfe8ff' : '#4a5a70';
+    ctx.fillText(invSearch ? invSearch + (invSearchFocus ? '|' : '') : '🔍 пошук…', px + 10, ry + searchH / 2);
+    invHit.search = { x: px, y: ry, w: pw, h: searchH };
+    ctx.textBaseline = 'alphabetic';
+    ry += searchH + 8;
+
+    // --- Inventory card grid ---
+    const list = filteredInventory();
+    // Card sizing — larger on portrait for touch
+    const CARD_GAP = 6;
+    const cols = geom.portraitMode ? Math.max(2, Math.floor(pw / 150)) : 2;
+    const cardW = (pw - (cols - 1) * CARD_GAP) / cols;
+    // Card height: enough for icon + 2 text rows + padding — min 52px (≥44px touch target)
+    const cardH = geom.portraitMode ? 56 : 52;
+    const listTop = ry;
+    const visibleH = (panelBoxTop + panelBoxH) - listTop - 8;
+    const rows = Math.ceil(list.length / cols);
+    const rowH = cardH + CARD_GAP;
+    const maxScroll = Math.max(0, rows * rowH - visibleH);
+    invScroll = Math.max(0, Math.min(maxScroll, invScroll));
+
+    ctx.save();
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(px - 4, listTop, pw + 8, visibleH + 4, 4);
+      ctx.clip();
+    } else {
+      ctx.beginPath(); ctx.rect(px - 6, listTop - 2, pw + 12, visibleH + 4); ctx.clip();
+    }
+
+    ctx.textBaseline = 'alphabetic';
+    const iconSize = geom.portraitMode ? 34 : 30;
+    const iconPad = geom.portraitMode ? 9 : 8;
+
     for (let i = 0; i < list.length; i++) {
       const k = list[i]!;
-      const cxx = px + (i % cols) * (ew + 6), cyy = listTop + Math.floor(i / cols) * eh - invScroll;
-      if (cyy + eh < listTop - 4 || cyy > listTop + visibleH + 4) continue;
+      const col2 = i % cols;
+      const row2 = Math.floor(i / cols);
+      const cxx = px + col2 * (cardW + CARD_GAP);
+      const cyy = listTop + row2 * rowH - invScroll;
+      if (cyy + cardH < listTop - 4 || cyy > listTop + visibleH + 4) continue;
       const c = CUBES[k]!;
       const own = owned(k);
       const affordable = budgetUsed() + c.cost <= budgetCap();
       const usable = own > 0 && affordable;
       const sel = selectedType === k;
-      ctx.globalAlpha = usable ? 1 : 0.42;
-      ctx.fillStyle = sel ? 'rgba(40,58,94,0.95)' : 'rgba(18,26,42,0.92)';
-      ctx.fillRect(cxx, cyy, ew, eh - 4);
-      ctx.strokeStyle = RARITY_COL[c.rarity]!; ctx.lineWidth = sel ? 2.4 : 1.4; ctx.strokeRect(cxx, cyy, ew, eh - 4);
-      ctx.fillStyle = c.col; ctx.fillRect(cxx + 4, cyy + 4, 26, 26);
-      drawGlyph(ctx, c.glyph, cxx + 4 + 13, cyy + 4 + 13, 26, c.tint, 1);
+      const rarCol = RARITY_COL[c.rarity]!;
+
+      ctx.globalAlpha = usable ? 1 : 0.38;
+
+      // Card background
+      ctx.fillStyle = sel
+        ? 'rgba(34,52,90,0.97)'
+        : 'rgba(14,20,36,0.93)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(cxx, cyy, cardW, cardH, 8);
+        ctx.fill();
+      } else {
+        ctx.fillRect(cxx, cyy, cardW, cardH);
+      }
+
+      // Selected: bright background glow
+      if (sel) {
+        ctx.globalAlpha = usable ? 0.18 : 0.07;
+        ctx.fillStyle = rarCol;
+        if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+          ctx.beginPath();
+          (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+            .roundRect(cxx, cyy, cardW, cardH, 8);
+          ctx.fill();
+        }
+        ctx.globalAlpha = usable ? 1 : 0.38;
+      }
+
+      // Rarity border
+      ctx.strokeStyle = rarCol;
+      ctx.lineWidth = sel ? 2.5 : 1.2;
+      ctx.globalAlpha = (usable ? 1 : 0.38) * (sel ? 1 : 0.7);
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(cxx + 0.5, cyy + 0.5, cardW - 1, cardH - 1, 8);
+        ctx.stroke();
+      } else {
+        ctx.strokeRect(cxx + 0.5, cyy + 0.5, cardW - 1, cardH - 1);
+      }
+      ctx.globalAlpha = usable ? 1 : 0.38;
+
+      // Icon background circle
+      const iconX = cxx + iconPad + iconSize / 2;
+      const iconY = cyy + cardH / 2;
+      ctx.fillStyle = c.col + '44';
+      ctx.beginPath(); ctx.arc(iconX, iconY, iconSize / 2 + 2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = c.col + 'aa';
+      ctx.beginPath(); ctx.arc(iconX, iconY, iconSize / 2, 0, Math.PI * 2); ctx.fill();
+      drawGlyph(ctx, c.glyph, iconX, iconY, iconSize, c.tint, 1);
+
+      // Text block
+      const textX = cxx + iconPad + iconSize + 8;
+      const textW = cardW - textX + cxx;
+      // Name
       ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#eaf0fb';
-      ctx.fillText(c.name, cxx + 34, cyy + 13);
-      ctx.font = '10px system-ui'; ctx.fillStyle = RARITY_COL[c.rarity]!;
-      ctx.fillText('×' + (own === Infinity ? '∞' : own) + '  ·  ' + c.cost + '◆', cxx + 34, cyy + 25);
-      ctx.font = '9px system-ui'; ctx.fillStyle = '#8fa0b8';
-      let eff = c.eff; const maxw = ew - 38;
-      while (eff.length > 4 && ctx.measureText(eff).width > maxw) eff = eff.slice(0, -2);
-      if (eff !== c.eff) eff = eff.slice(0, -1) + '…';
-      ctx.fillText(eff, cxx + 34, cyy + 36);
+      let nameText = c.name;
+      while (nameText.length > 3 && ctx.measureText(nameText).width > textW - 4)
+        nameText = nameText.slice(0, -1);
+      if (nameText !== c.name) nameText = nameText.slice(0, -1) + '…';
+      ctx.fillText(nameText, textX, cyy + cardH / 2 - 4);
+
+      // Count + cost row
+      ctx.font = '10px system-ui';
+      const ownStr = '×' + (own === Infinity ? '∞' : own);
+      ctx.fillStyle = own > 0 ? rarCol : '#5a6a7a';
+      ctx.fillText(ownStr, textX, cyy + cardH / 2 + 10);
+      ctx.fillStyle = '#7a8fa8';
+      ctx.fillText('  ' + c.cost + '◆', textX + ctx.measureText(ownStr).width, cyy + cardH / 2 + 10);
+
       ctx.globalAlpha = 1;
-      invHit.entries.push({ k, x: cxx, y: cyy, w: ew, h: eh - 4, usable });
+      invHit.entries.push({ k, x: cxx, y: cyy, w: cardW, h: cardH, usable });
     }
     ctx.restore();
+
+    // Scrollbar
     if (maxScroll > 0) {
-      const sbH = visibleH * (visibleH / (rows * eh));
-      const sbY = listTop + (invScroll / maxScroll) * (visibleH - sbH);
-      ctx.fillStyle = 'rgba(120,150,190,0.4)'; ctx.fillRect(px + pw - 3, sbY, 3, sbH);
+      const sbTrackH = visibleH;
+      const sbH = Math.max(24, sbTrackH * (visibleH / (rows * rowH)));
+      const sbY = listTop + (invScroll / maxScroll) * (sbTrackH - sbH);
+      const sbX = px + pw + 2;
+      ctx.fillStyle = 'rgba(60,80,130,0.3)'; ctx.fillRect(sbX, listTop, 3, visibleH);
+      ctx.fillStyle = 'rgba(140,170,220,0.55)'; ctx.fillRect(sbX, sbY, 3, sbH);
     }
+
     if (list.length === 0) {
-      ctx.fillStyle = '#6f7e94'; ctx.font = '11px system-ui';
-      ctx.fillText('— нічого за фільтром. Відкрий лут.', px, listTop + 16);
+      ctx.fillStyle = '#5a6e86'; ctx.font = '11px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText('— нічого за фільтром', px + pw / 2, listTop + 20);
+      ctx.textAlign = 'left';
     }
   }
 
   // ---- DRAW PROGRESS HUD — level / XP / Essence / budget readout ----
+  // Helper: draw a rounded progress bar
+  function drawBar(
+    bx: number, by: number, bw: number, bh: number,
+    frac: number, fillCol: string, trackCol: string, label: string, labelCol: string
+  ): void {
+    const r = bh / 2;
+    // Track
+    ctx.fillStyle = trackCol;
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(bx, by, bw, bh, r);
+      ctx.fill();
+    } else { ctx.fillRect(bx, by, bw, bh); }
+    // Fill
+    if (frac > 0) {
+      const fw = Math.max(r * 2, bw * frac);
+      ctx.fillStyle = fillCol;
+      ctx.save();
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(bx, by, fw, bh, r);
+        ctx.clip();
+        ctx.fill();
+      } else {
+        ctx.fillRect(bx, by, fw, bh);
+      }
+      ctx.restore();
+    }
+    // Label
+    if (label) {
+      ctx.font = 'bold 9px system-ui'; ctx.fillStyle = labelCol; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, bx + bw / 2, by + bh / 2);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    }
+  }
+
   function drawProgressHUD(): void {
     const lvl = opts.state.level;
     const xpCur = opts.state.xp;
     const xpMax = xpToNext(lvl);
     const used = budgetUsed(), cap = budgetCap();
+    const xpFrac = xpMax > 0 ? Math.min(1, xpCur / xpMax) : 0;
+    const budFrac = cap > 0 ? Math.min(1, used / cap) : 0;
+    const budFull = used >= cap;
+    const budCol = budFull ? '#e5534b' : (budFrac > 0.8 ? '#e3b341' : '#4da8e0');
 
     if (isPortrait()) {
-      // Portrait: full-width compact strip at y=0, height = portraitHudH()
+      // Portrait: full-width clean strip at top
       const hudH = portraitHudH();
-      const pad = 8;
-      const bw = W - pad * 2;
-      // Background
-      ctx.fillStyle = 'rgba(8,12,20,0.88)'; ctx.fillRect(0, 0, W, hudH);
-      ctx.strokeStyle = 'rgba(90,120,170,0.35)'; ctx.lineWidth = 1;
-      ctx.strokeRect(0, 0, W, hudH);
+      const pad = 10;
+      const stripW = W;
+
+      // Frosted background
+      ctx.fillStyle = 'rgba(7,10,18,0.93)';
+      ctx.fillRect(0, 0, stripW, hudH);
+      // Bottom separator
+      ctx.strokeStyle = 'rgba(80,110,165,0.3)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, hudH); ctx.lineTo(stripW, hudH); ctx.stroke();
+
       ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
 
-      // Row 1: Level | Essence | Field  (y≈18)
-      ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#cfe0ff';
-      ctx.fillText('Рів. ' + lvl, pad, 18);
-      ctx.font = '11px system-ui'; ctx.fillStyle = '#a0c8ff';
-      ctx.fillText('Ess: ' + opts.state.essence, pad + 66, 18);
-      ctx.fillStyle = '#9fb4d6';
-      ctx.fillText('Поле ' + (ringUnlocked * 2 + 1) + '×' + (ringUnlocked * 2 + 1), pad + 148, 18);
+      // Pill: Level
+      const lvlLabel = 'Рів. ' + lvl;
+      ctx.font = 'bold 12px system-ui';
+      const lvlW = ctx.measureText(lvlLabel).width + 20;
+      ctx.fillStyle = 'rgba(40,60,110,0.6)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(pad, 6, lvlW, 20, 10);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(100,140,220,0.35)'; ctx.lineWidth = 1; ctx.stroke();
+      } else { ctx.fillRect(pad, 6, lvlW, 20); }
+      ctx.fillStyle = '#c8dcff';
+      ctx.fillText(lvlLabel, pad + 10, 21);
 
-      // Row 2: XP bar  (y≈24..34)
-      const xBy = 24, xBh = 10;
-      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(pad, xBy, bw, xBh);
-      const xpFrac = xpMax > 0 ? Math.min(1, xpCur / xpMax) : 0;
-      ctx.fillStyle = '#9060d0'; ctx.fillRect(pad, xBy, bw * xpFrac, xBh);
-      ctx.strokeStyle = 'rgba(120,100,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(pad, xBy, bw, xBh);
-      ctx.font = 'bold 9px system-ui'; ctx.fillStyle = '#d0b8ff'; ctx.textAlign = 'center';
-      ctx.fillText('XP: ' + xpCur + ' / ' + xpMax, pad + bw / 2, xBy + 9);
+      // Pill: Essence
+      ctx.font = '11px system-ui';
+      const essLabel = '✦ ' + opts.state.essence;
+      const essW = ctx.measureText(essLabel).width + 18;
+      ctx.fillStyle = 'rgba(40,30,80,0.6)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(pad + lvlW + 6, 6, essW, 20, 10);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(140,100,200,0.35)'; ctx.lineWidth = 1; ctx.stroke();
+      } else { ctx.fillRect(pad + lvlW + 6, 6, essW, 20); }
+      ctx.fillStyle = '#c8a8ff';
+      ctx.fillText(essLabel, pad + lvlW + 15, 21);
+
+      // Field pill (top-right)
+      ctx.font = '10px system-ui';
+      const fieldLabel = (ringUnlocked * 2 + 1) + '×' + (ringUnlocked * 2 + 1);
+      const fieldW = ctx.measureText(fieldLabel).width + 16;
+      ctx.fillStyle = 'rgba(20,36,60,0.6)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(W - fieldW - pad, 6, fieldW, 20, 10);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(70,100,160,0.3)'; ctx.lineWidth = 1; ctx.stroke();
+      } else { ctx.fillRect(W - fieldW - pad, 6, fieldW, 20); }
+      ctx.fillStyle = '#7a9abf'; ctx.textAlign = 'center';
+      ctx.fillText(fieldLabel, W - fieldW / 2 - pad, 21);
       ctx.textAlign = 'left';
 
-      // Row 3: Budget bar  (y≈40..54)
-      const bBy = 40, bBh = 14;
-      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(pad, bBy, bw, bBh);
-      const frac = cap > 0 ? Math.min(1, used / cap) : 0;
-      const full = used >= cap;
-      ctx.fillStyle = full ? '#e5534b' : (frac > 0.8 ? '#e3b341' : '#56b0e3');
-      ctx.fillRect(pad, bBy, bw * frac, bBh);
-      ctx.strokeStyle = 'rgba(120,150,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(pad, bBy, bw, bBh);
-      ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#eaf0fb'; ctx.textAlign = 'center';
-      ctx.fillText('Бюджет: ' + used + ' / ' + cap + '◆', pad + bw / 2, bBy + 11);
-      ctx.textAlign = 'left';
+      // XP bar (full width)
+      const barW = W - pad * 2;
+      drawBar(pad, 30, barW, 12, xpFrac, '#8850d8', 'rgba(0,0,0,0.45)',
+        'XP ' + xpCur + '/' + xpMax, '#d0b8ff');
+
+      // Budget bar (full width)
+      drawBar(pad, 46, barW, 16, budFrac, budCol, 'rgba(0,0,0,0.45)',
+        'Бюджет ' + used + '/' + cap + '◆', budFull ? '#ffddcc' : '#dff0ff');
       return;
     }
 
-    // Desktop layout (unchanged)
-    const x = 16, y = 14, w = 340, h = 70;
-    ctx.fillStyle = 'rgba(8,12,20,0.7)'; ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = 'rgba(90,120,170,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
+    // ---- Desktop HUD: clean card in top-left ----
+    const x = 14, y = 12, w = 350, h = 80;
+    // Card background
+    ctx.fillStyle = 'rgba(7,10,18,0.82)';
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(x, y, w, h, 10);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(80,110,175,0.28)'; ctx.lineWidth = 1; ctx.stroke();
+    } else {
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(80,110,175,0.28)'; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
+    }
+
     ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
 
-    // Row 1: Level + Essence + field
-    ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#cfe0ff';
-    ctx.fillText('Рівень ' + lvl, x + 10, y + 16);
-    ctx.font = '11px system-ui'; ctx.fillStyle = '#a0c8ff';
-    ctx.fillText('Essence: ' + opts.state.essence, x + 92, y + 16);
-    ctx.fillStyle = '#9fb4d6';
-    ctx.fillText('Поле ' + (ringUnlocked * 2 + 1) + '×' + (ringUnlocked * 2 + 1), x + 196, y + 16);
+    // Level pill
+    const pad = 12;
+    const lvlLabel = 'Рів. ' + lvl;
+    ctx.font = 'bold 13px system-ui';
+    const lvlW2 = ctx.measureText(lvlLabel).width + 20;
+    ctx.fillStyle = 'rgba(40,60,120,0.55)';
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(x + pad, y + 8, lvlW2, 22, 11);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(100,140,230,0.3)'; ctx.lineWidth = 1; ctx.stroke();
+    } else { ctx.fillRect(x + pad, y + 8, lvlW2, 22); }
+    ctx.fillStyle = '#c8dcff';
+    ctx.fillText(lvlLabel, x + pad + 10, y + 24);
 
-    // Row 2: XP bar
-    const bx = x + 10, by2 = y + 22, bw = w - 20, bh = 10;
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by2, bw, bh);
-    const xpFrac = xpMax > 0 ? Math.min(1, xpCur / xpMax) : 0;
-    ctx.fillStyle = '#9060d0';
-    ctx.fillRect(bx, by2, bw * xpFrac, bh);
-    ctx.strokeStyle = 'rgba(120,100,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(bx, by2, bw, bh);
-    ctx.font = 'bold 9px system-ui'; ctx.fillStyle = '#d0b8ff'; ctx.textAlign = 'center';
-    ctx.fillText('XP: ' + xpCur + ' / ' + xpMax, bx + bw / 2, by2 + 9);
+    // Essence pill
+    ctx.font = '11px system-ui';
+    const essLabel2 = '✦ ' + opts.state.essence;
+    const essW2 = ctx.measureText(essLabel2).width + 18;
+    ctx.fillStyle = 'rgba(40,30,80,0.55)';
+    const essX = x + pad + lvlW2 + 8;
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(essX, y + 8, essW2, 22, 11);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(140,100,200,0.3)'; ctx.lineWidth = 1; ctx.stroke();
+    } else { ctx.fillRect(essX, y + 8, essW2, 22); }
+    ctx.fillStyle = '#c0a0f0';
+    ctx.fillText(essLabel2, essX + 9, y + 24);
+
+    // Field pill
+    ctx.font = '10px system-ui';
+    const fieldLabel2 = (ringUnlocked * 2 + 1) + '×' + (ringUnlocked * 2 + 1);
+    const fieldW2 = ctx.measureText(fieldLabel2).width + 16;
+    const fieldX = essX + essW2 + 8;
+    ctx.fillStyle = 'rgba(20,36,60,0.55)';
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(fieldX, y + 8, fieldW2, 22, 11);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(70,100,160,0.3)'; ctx.lineWidth = 1; ctx.stroke();
+    } else { ctx.fillRect(fieldX, y + 8, fieldW2, 22); }
+    ctx.fillStyle = '#7a9abf'; ctx.textAlign = 'center';
+    ctx.fillText(fieldLabel2, fieldX + fieldW2 / 2, y + 24);
     ctx.textAlign = 'left';
 
-    // Row 3: Budget bar
-    const bx2 = x + 10, by3 = y + 38, bh2 = 12;
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx2, by3, bw, bh2);
-    const frac = cap > 0 ? Math.min(1, used / cap) : 0;
-    const full = used >= cap;
-    ctx.fillStyle = full ? '#e5534b' : (frac > 0.8 ? '#e3b341' : '#56b0e3');
-    ctx.fillRect(bx2, by3, bw * frac, bh2);
-    ctx.strokeStyle = 'rgba(120,150,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(bx2, by3, bw, bh2);
-    ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#eaf0fb'; ctx.textAlign = 'center';
-    ctx.fillText('Бюджет: ' + used + ' / ' + cap + '◆', bx2 + bw / 2, by3 + 10);
-    ctx.textAlign = 'left';
+    // XP bar
+    const barX = x + pad, barW2 = w - pad * 2;
+    drawBar(barX, y + 38, barW2, 12, xpFrac, '#8850d8', 'rgba(0,0,0,0.45)',
+      'XP ' + xpCur + '/' + xpMax, '#d0b8ff');
+
+    // Budget bar
+    drawBar(barX, y + 56, barW2, 14, budFrac, budCol, 'rgba(0,0,0,0.45)',
+      'Бюджет ' + used + '/' + cap + '◆', budFull ? '#ffddcc' : '#dff0ff');
   }
 
   // ---- DRAW STATS PANEL — skipped in portrait mode ----
@@ -1248,15 +1566,24 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     const geomS = builderGeom();
     if (geomS.portraitMode) return; // stats panel hidden in portrait — shown in inventory area instead
     const { panelW } = geomS;
-    const x = W - panelW + 14, w = panelW - 28;
+    const x = W - panelW + 12, w = panelW - 24;
     const L = rightPanelLayout();
     const y = L.stats.boxTop + 26;
     const s = derived!;
     const panelH = L.stats.boxH;
-    ctx.fillStyle = 'rgba(8,12,20,0.66)'; ctx.fillRect(x - 8, y - 26, w + 16, panelH);
-    ctx.strokeStyle = 'rgba(90,120,170,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(x - 8, y - 26, w + 16, panelH);
-    ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#9fb4d6'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-    ctx.fillText('СТАТИ', x, y - 10);
+    ctx.fillStyle = 'rgba(7,10,18,0.78)';
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(x - 8, y - 26, w + 16, panelH, 10);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(90,120,170,0.22)'; ctx.lineWidth = 1; ctx.stroke();
+    } else {
+      ctx.fillRect(x - 8, y - 26, w + 16, panelH);
+      ctx.strokeStyle = 'rgba(90,120,170,0.22)'; ctx.lineWidth = 1; ctx.strokeRect(x - 8, y - 26, w + 16, panelH);
+    }
+    ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#5a7aaa'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText('СТАТИ', x + 2, y - 10);
 
     const primary: [string, string, string, string][] = [
       ['heart5', 'HP', Math.round(s.maxHP).toString(), '#56d364'],
@@ -1334,13 +1661,22 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     const geomT = builderGeom();
     if (geomT.portraitMode) return;
     const { panelW } = geomT;
-    const x = W - panelW + 14, w = panelW - 28;
+    const x = W - panelW + 12, w = panelW - 24;
     const y = rightPanelLayout().traits.boxTop + 26;
     const moves = deriveMoveset(build);
-    ctx.fillStyle = 'rgba(8,12,20,0.66)'; ctx.fillRect(x - 8, y - 26, w + 16, 110);
-    ctx.strokeStyle = 'rgba(90,120,170,0.25)'; ctx.lineWidth = 1; ctx.strokeRect(x - 8, y - 26, w + 16, 110);
-    ctx.font = 'bold 12px system-ui'; ctx.fillStyle = '#9fb4d6'; ctx.textAlign = 'left';
-    ctx.fillText('АКТИВНІ ТРЕЙТИ (' + traitsCache.length + ')', x, y - 10);
+    ctx.fillStyle = 'rgba(7,10,18,0.78)';
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(x - 8, y - 26, w + 16, 110, 10);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(90,120,170,0.22)'; ctx.lineWidth = 1; ctx.stroke();
+    } else {
+      ctx.fillRect(x - 8, y - 26, w + 16, 110);
+      ctx.strokeStyle = 'rgba(90,120,170,0.22)'; ctx.lineWidth = 1; ctx.strokeRect(x - 8, y - 26, w + 16, 110);
+    }
+    ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#5a7aaa'; ctx.textAlign = 'left';
+    ctx.fillText('ТРЕЙТИ' + (traitsCache.length > 0 ? ' (' + traitsCache.length + ')' : ''), x + 2, y - 10);
     ctx.textBaseline = 'middle';
     if (traitsCache.length === 0) {
       ctx.font = '11px system-ui'; ctx.fillStyle = '#6f7e94';
@@ -1523,12 +1859,21 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     layoutPresetButtons();
     ctx.font = 'bold 11px system-ui'; ctx.textBaseline = 'middle';
     for (const b of presetButtons) {
-      ctx.fillStyle = 'rgba(22,32,58,0.9)'; ctx.fillRect(b.x, b.y, b.w, b.h);
-      ctx.strokeStyle = '#38507e'; ctx.lineWidth = 1; ctx.strokeRect(b.x, b.y, b.w, b.h);
-      ctx.fillStyle = '#dfe8ff'; ctx.textAlign = 'left';
-      ctx.fillText(b.label, b.x + 9, b.y + b.h / 2 + 1);
+      ctx.fillStyle = 'rgba(16,24,48,0.88)';
+      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+        ctx.beginPath();
+        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+          .roundRect(b.x, b.y, b.w, b.h, 7);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(60,88,150,0.6)'; ctx.lineWidth = 1; ctx.stroke();
+      } else {
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.strokeStyle = '#38507e'; ctx.lineWidth = 1; ctx.strokeRect(b.x, b.y, b.w, b.h);
+      }
+      ctx.fillStyle = '#aabcd8'; ctx.textAlign = 'center';
+      ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
     }
-    ctx.textBaseline = 'alphabetic';
+    ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
   }
   function presetHit(mx: number, my: number): string | null {
     for (const b of presetButtons) {
@@ -1558,14 +1903,29 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
       fightBtnRect = { x: 0, y: 0, w: 0, h: 0 };
       return;
     }
-    const bw = 110, bh = 30;
+    const bw = 130, bh = 36;
     const bx = W - geomB.panelW / 2 - bw / 2;
-    const by = H - 42;
+    const by = H - 52;
     fightBtnRect = { x: bx, y: by, w: bw, h: bh };
-    ctx.fillStyle = '#2a1d14'; ctx.fillRect(bx, by, bw, bh);
-    ctx.strokeStyle = '#a05a32'; ctx.lineWidth = 1.5; ctx.strokeRect(bx, by, bw, bh);
-    ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#ffa060'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('← Лоббі', bx + bw / 2, by + bh / 2);
+    // Glow behind button
+    ctx.globalAlpha = 0.12 + 0.06 * Math.sin(t * 2.5);
+    ctx.fillStyle = '#ff8040';
+    ctx.beginPath(); ctx.ellipse(bx + bw / 2, by + bh / 2, bw * 0.7, bh * 0.9, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    // Button bg
+    ctx.fillStyle = '#1e1008';
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      ctx.beginPath();
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
+        .roundRect(bx, by, bw, bh, 10);
+      ctx.fill();
+      ctx.strokeStyle = '#8a4a22'; ctx.lineWidth = 1.5; ctx.stroke();
+    } else {
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = '#8a4a22'; ctx.lineWidth = 1.5; ctx.strokeRect(bx, by, bw, bh);
+    }
+    ctx.font = 'bold 14px system-ui'; ctx.fillStyle = '#ffaa60'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('← Лоббі', bx + bw / 2, by + bh / 2 + 1);
     ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   }
 
@@ -1626,33 +1986,33 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
 
     // min-height 44px for touch targets
     const btnStyleBase = [
-      'color:#dfe8ff',
-      'border-radius:8px',
+      'border-radius:10px',
       'font:bold 12px system-ui',
       'cursor:pointer',
-      'letter-spacing:.3px',
-      'box-shadow:0 2px 8px #0007',
+      'letter-spacing:.2px',
+      'box-shadow:0 2px 10px #0009',
       'touch-action:manipulation',
       '-webkit-tap-highlight-color:transparent',
+      'transition:filter 0.1s,background 0.1s',
     ].join(';');
     // Desktop buttons use fixed padding; portrait buttons flex-grow to fill the row evenly
-    const btnStyleDesktop = btnStyleBase + ';background:#16203a;border:1px solid #38507e;padding:10px 12px;min-height:44px;';
-    const btnStylePortrait = btnStyleBase + ';background:#16203a;border:1px solid #38507e;padding:6px 8px;min-height:44px;flex:1 1 0;text-align:center;';
+    const btnStyleDesktop = btnStyleBase + ';color:#c8d8f0;background:#111d38;border:1px solid #2e4878;padding:10px 14px;min-height:44px;';
+    const btnStylePortrait = btnStyleBase + ';color:#c8d8f0;background:#111d38;border:1px solid #2e4878;padding:5px 8px;min-height:44px;flex:1 1 0;text-align:center;font-size:11px;';
 
     function makeBtn(text: string, extraStyle: string, title: string): HTMLButtonElement {
       const btn = document.createElement('button');
       btn.textContent = text; btn.title = title;
       btn.style.cssText = (isPortrait() ? btnStylePortrait : btnStyleDesktop) + ';' + extraStyle;
-      btn.addEventListener('pointerenter', () => { btn.style.filter = 'brightness(1.2)'; });
+      btn.addEventListener('pointerenter', () => { btn.style.filter = 'brightness(1.25)'; });
       btn.addEventListener('pointerleave', () => { btn.style.filter = ''; });
       return btn;
     }
 
     // Portrait gets "← Лоббі" as first button in the row
-    const btnLobby  = makeBtn('← Лоббі',         'background:#2a1d14;border-color:#a05a32;color:#ffa060', 'повернутись в лоббі');
-    const btnExpand = makeBtn('Розширити поле',    'background:#1a2230;border-color:#52708e', 'розширити поле');
-    const btnAll    = makeBtn('всі звʼязки: ВИМК', '', 'показати всі звʼязки');
-    const btnCodex  = makeBtn('Кодекс',            '', 'кодекс комбінацій');
+    const btnLobby  = makeBtn('← Лоббі',         'background:#1e1208;border-color:#7a4020;color:#ffaa70', 'повернутись в лоббі');
+    const btnExpand = makeBtn('⊞ Поле',    'background:#0e1a2c;border-color:#3a6090', 'розширити поле');
+    const btnAll    = makeBtn('◈ Звʼязки', '', 'показати всі звʼязки');
+    const btnCodex  = makeBtn('📖 Кодекс',            '', 'кодекс комбінацій');
 
     btnLobby.addEventListener('click', () => {
       if (build.length > 1) opts.onFight(build.map(p => ({ ...p })));
@@ -1661,7 +2021,7 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     btnExpand.addEventListener('click', () => expandGrid());
     btnAll.addEventListener('click', () => {
       showAllBonds = !showAllBonds;
-      btnAll.textContent = 'всі звʼязки: ' + (showAllBonds ? 'УВІМК' : 'ВИМК');
+      btnAll.textContent = showAllBonds ? '◈ Звʼязки ✓' : '◈ Звʼязки';
     });
     btnCodex.addEventListener('click', () => { showCodex = !showCodex; });
 
