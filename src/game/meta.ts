@@ -1,0 +1,226 @@
+/**
+ * src/game/meta.ts — single source of truth for progression + persistence.
+ * Pure logic + thin storage adapter. NO Pixi/DOM imports. No top-level side effects.
+ */
+
+import type { Build } from '../index';
+import { CUBES } from '../index';
+
+// ---------------------------------------------------------------------------
+// Storage shim (injectable for tests)
+// ---------------------------------------------------------------------------
+export interface StorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+export interface SaveState {
+  level: number;
+  xp: number;
+  essence: number;
+  inventory: Record<string, number>;
+  heroBuild: Build;
+}
+
+export interface FightResult {
+  won: boolean;
+  stagesCleared: number;
+}
+
+export type RewardEvent =
+  | { kind: 'essence'; n: number }
+  | { kind: 'xp'; n: number }
+  | { kind: 'levelUp'; level: number }
+  | { kind: 'loot'; cubes: string[] };
+
+// ---------------------------------------------------------------------------
+// Reward constants (tunable)
+// ---------------------------------------------------------------------------
+export const ESSENCE_PER_FIGHT = 5;
+export const XP_PER_STAGE      = 20;
+export const XP_WIN_BONUS      = 30;
+export const XP_LOSS           = 10;
+
+export function xpToNext(level: number): number {
+  return 50 + level * 25;
+}
+
+// ---------------------------------------------------------------------------
+// Shared loot data — must mirror builder-view.ts constants exactly
+// ---------------------------------------------------------------------------
+const SEED_BASE = 1337;
+const RARITY_WEIGHT: Record<string, number> = { common: 60, rare: 26, epic: 11, legendary: 3 };
+const TYPE_ORDER = [
+  'core',
+  'vital', 'regen', 'lifesteal',
+  'force', 'focus', 'pierce', 'berserk',
+  'plate', 'block', 'thorns', 'ward',
+  'swift', 'haste', 'evasion',
+  'mana', 'catalyst', 'ember', 'frost', 'spark', 'poison', 'arcane',
+];
+const PLACEABLE = TYPE_ORDER.filter(k => k !== 'core');
+
+function mulberry32(a: number): () => number {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Pick a random weighted cube type (shared by builder-view and meta).
+ * Uses the same RARITY_WEIGHT table and PLACEABLE list.
+ */
+export function weightedCubePick(r: () => number): string {
+  let total = 0;
+  for (const k in RARITY_WEIGHT) total += RARITY_WEIGHT[k]!;
+  let roll = r() * total;
+  let rar = 'common';
+  for (const k in RARITY_WEIGHT) { roll -= RARITY_WEIGHT[k]!; if (roll <= 0) { rar = k; break; } }
+  const pool = PLACEABLE.filter(k => (CUBES[k]?.rarity ?? 'common') === rar);
+  if (pool.length === 0) return PLACEABLE[(r() * PLACEABLE.length) | 0]!;
+  return pool[(r() * pool.length) | 0]!;
+}
+
+/**
+ * Grant loot items into an inventory (n random cubes).
+ * Returns the list of cube keys granted (for RewardEvent).
+ */
+export function grantLootInto(
+  inventory: Record<string, number>,
+  n: number,
+  rng: () => number,
+): string[] {
+  const granted: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const k = weightedCubePick(rng);
+    inventory[k] = (inventory[k] ?? 0) + 1;
+    granted.push(k);
+  }
+  return granted;
+}
+
+// Loot counter — used internally to seed loot rng uniquely per grant call.
+// We store this as part of the computation, not in SaveState (pure function approach).
+// Increment by passing a counter; we derive a counter from state.level + call count.
+function makeLootRng(seed: number): () => number {
+  return mulberry32(SEED_BASE * 7 + seed * 2654435761);
+}
+
+// ---------------------------------------------------------------------------
+// Starter inventory (same 16 cubes the builder grants today: grantLoot([8,8]) twice)
+// ---------------------------------------------------------------------------
+export function defaultState(): SaveState {
+  const inventory: Record<string, number> = {};
+  for (const k of PLACEABLE) inventory[k] = 0;
+
+  // Simulate the builder's initial loot: grantLoot([8,8]) twice = 16 cubes total
+  // Builder calls grantLoot(LOOT_BATCH) with lootClicks++ (starts at 0, increments to 1, then 2)
+  const r1 = makeLootRng(1);  // lootClicks = 1 after first call
+  grantLootInto(inventory, 8, r1);
+  const r2 = makeLootRng(2);  // lootClicks = 2 after second call
+  grantLootInto(inventory, 8, r2);
+
+  return {
+    level: 1,
+    xp: 0,
+    essence: 0,
+    inventory,
+    heroBuild: [{ gx: 0, gy: 0, type: 'core' }],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// addFightReward — mutates state, returns events
+// ---------------------------------------------------------------------------
+export function addFightReward(
+  state: SaveState,
+  result: FightResult,
+  rng?: () => number,
+): { events: RewardEvent[] } {
+  const events: RewardEvent[] = [];
+
+  // Essence (always)
+  state.essence += ESSENCE_PER_FIGHT;
+  events.push({ kind: 'essence', n: ESSENCE_PER_FIGHT });
+
+  // XP
+  const xpGained =
+    result.stagesCleared * XP_PER_STAGE + (result.won ? XP_WIN_BONUS : XP_LOSS);
+  state.xp += xpGained;
+  events.push({ kind: 'xp', n: xpGained });
+
+  // Level-up loop
+  let lootCounter = state.level * 1000 + state.xp; // unique seed per state snapshot
+  while (state.xp >= xpToNext(state.level)) {
+    state.xp -= xpToNext(state.level);
+    state.level++;
+
+    // Per-level loot batch (1–2 cubes), using rng if provided, else seeded from level
+    const levelRng = rng ?? makeLootRng(lootCounter++);
+    const n = 1 + ((levelRng() * 2) | 0); // 1 or 2
+    const granted = grantLootInto(state.inventory, n, levelRng);
+
+    events.push({ kind: 'levelUp', level: state.level });
+    if (granted.length > 0) {
+      events.push({ kind: 'loot', cubes: granted });
+    }
+  }
+
+  return { events };
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+const SAVE_KEY = 'pockethero.save';
+
+export function save(state: SaveState, storage?: StorageLike): void {
+  const s: StorageLike | undefined = storage ?? (typeof globalThis !== 'undefined' && 'localStorage' in globalThis
+    ? (globalThis as unknown as { localStorage: StorageLike }).localStorage
+    : undefined);
+  if (!s) return;
+  try {
+    s.setItem(SAVE_KEY, JSON.stringify(state));
+  } catch {
+    // Storage may be unavailable (private browsing, quota exceeded, etc.)
+  }
+}
+
+export function load(storage?: StorageLike): SaveState {
+  const s: StorageLike | undefined = storage ?? (typeof globalThis !== 'undefined' && 'localStorage' in globalThis
+    ? (globalThis as unknown as { localStorage: StorageLike }).localStorage
+    : undefined);
+  if (s) {
+    try {
+      const raw = s.getItem(SAVE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<SaveState>;
+        // Validate shape — fallback to default if malformed
+        if (
+          typeof parsed.level === 'number' &&
+          typeof parsed.xp === 'number' &&
+          typeof parsed.essence === 'number' &&
+          typeof parsed.inventory === 'object' && parsed.inventory !== null &&
+          Array.isArray(parsed.heroBuild)
+        ) {
+          return {
+            level: parsed.level,
+            xp: parsed.xp,
+            essence: parsed.essence,
+            inventory: parsed.inventory,
+            heroBuild: parsed.heroBuild,
+          };
+        }
+      }
+    } catch {
+      // Malformed JSON or unavailable storage — fall through to default
+    }
+  }
+  return defaultState();
+}
