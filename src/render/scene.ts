@@ -121,7 +121,7 @@ export class Scene {
     // --- hitstop gate: freeze sim while hitstop remains ---
     if (this.vfx.hitstop > 0) {
       this.vfx.hitstop -= realDt;
-      // still advance particles + update creatures (visual only)
+      // frozen: do NOT step the sim or process events this frame
     } else {
       const r = advance(this.acc, realDt);
       this.acc = r.acc;
@@ -130,41 +130,41 @@ export class Scene {
           stepFight(this.state, this.rng, this.bus);
         }
       }
+
+      // --- drain events and play VFX (only after stepping — inside else) ---
+      for (const e of this.bus.drain()) {
+        const intents = mapEventToVfx(e, routeB);
+        for (const intent of intents) {
+          this.vfx.play(intent, (id) => this.screenPos(id), (id, col, fr) => this.flash(id, col, fr));
+        }
+
+        // additional creature + HUD reactions per event type
+        if (e.type === 'hit') {
+          const targetIdx = e.target === 'p1' ? 0 : 1;
+          const actorIdx = e.source === 'p1' ? 0 : 1;
+          this.creatures[targetIdx]?.react(e.amount);
+          // depth knockback: push target back into Z
+          this.creatureZ[targetIdx] = Math.min(1, (this.creatureZ[targetIdx] ?? 0) + (e.crit ? 0.55 : 0.35));
+          // actor lunge toward target
+          const lungeDir: -1 | 1 = actorIdx === 0 ? 1 : -1;
+          this.lungeX[actorIdx] = lungeDir * 18;
+          const label = e.crit ? `CRIT ${e.source} → ${e.target}: ${e.amount}` : `${e.source} → ${e.target}: ${e.amount}`;
+          this.hud.pushLog(label);
+        } else if (e.type === 'move-start') {
+          const actorIdx = e.actor === 'p1' ? 0 : 1;
+          this.creatures[actorIdx]?.flare(8);
+        } else if (e.type === 'ko') {
+          this.hud.pushLog(`★ ${e.target} KO'd!`);
+        } else if (e.type === 'heal') {
+          const targetIdx = e.target === 'p1' ? 0 : 1;
+          this.hud.pushLog(`+ heal ${e.target}: +${e.amount}`);
+          // small upward spring on heal
+          this.creatures[targetIdx]?.react(0);
+        }
+      }
     }
 
-    // --- drain events and play VFX ---
-    for (const e of this.bus.drain()) {
-      const intents = mapEventToVfx(e, routeB);
-      for (const intent of intents) {
-        this.vfx.play(intent, (id) => this.screenPos(id), (id, col, fr) => this.flash(id, col, fr));
-      }
-
-      // additional creature + HUD reactions per event type
-      if (e.type === 'hit') {
-        const targetIdx = e.target === 'p1' ? 0 : 1;
-        const actorIdx = e.source === 'p1' ? 0 : 1;
-        this.creatures[targetIdx]?.react(e.amount);
-        // depth knockback: push target back into Z
-        this.creatureZ[targetIdx] = Math.min(1, (this.creatureZ[targetIdx] ?? 0) + (e.crit ? 0.55 : 0.35));
-        // actor lunge toward target
-        const side: -1 | 1 = actorIdx === 0 ? 1 : -1;
-        this.lungeX[actorIdx] = side * 18;
-        const label = e.crit ? `CRIT ${e.source} → ${e.target}: ${e.amount}` : `${e.source} → ${e.target}: ${e.amount}`;
-        this.hud.pushLog(label);
-      } else if (e.type === 'move-start') {
-        const actorIdx = e.actor === 'p1' ? 0 : 1;
-        this.creatures[actorIdx]?.flare(8);
-      } else if (e.type === 'ko') {
-        this.hud.pushLog(`★ ${e.target} KO'd!`);
-      } else if (e.type === 'heal') {
-        const targetIdx = e.target === 'p1' ? 0 : 1;
-        this.hud.pushLog(`+ heal ${e.target}: +${e.amount}`);
-        // small upward spring on heal
-        this.creatures[targetIdx]?.react(0);
-      }
-    }
-
-    // --- update depth (Z) and lunge, ease back ---
+    // --- update depth (Z) and lunge, ease back (always runs — presentation layer) ---
     const W = this.app.screen.width, H = this.app.screen.height;
     const groundY = H * 0.82;
     this.creatures.forEach((c, i) => {
@@ -179,13 +179,14 @@ export class Scene {
       const depthScale = 1.0 - z * 0.15;
       const baseScale = Math.min(W * 0.30 / (c.meta.wCells * 14), H * 0.45 / (c.meta.hCells * 14));
       const effectiveScale = baseScale * depthScale;
-      // keep facing sign from update()
-      const side: -1 | 1 = i === 0 ? -1 : 1;
-      c.root.scale.set(effectiveScale);
-      c.facing = side;
+      // arena side: i=0 left (-1 X offset), i=1 right (+1 X offset)
+      const arenaSide: -1 | 1 = i === 0 ? -1 : 1;
+      // facing: presets authored pointing +x/right; left fighter faces right (1), right fighter faces left (-1)
+      c.facing = i === 0 ? 1 : -1;
+      c.root.scale.set(effectiveScale); // magnitude; creature.update() applies facing sign to scale.x
 
       // base X + lunge offset; depth Y shift (deeper = lower on screen, adds to groundY)
-      const baseX = W * 0.5 + side * W * 0.22;
+      const baseX = W * 0.5 + arenaSide * W * 0.22;
       const depthYShift = z * 18; // pushed down in screen-space when knocked back
       c.root.position.set(
         baseX + (this.lungeX[i] ?? 0),
