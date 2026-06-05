@@ -8,7 +8,9 @@ export function makeFighter(id: string, name: string, side: -1 | 1, build: Build
   return {
     id, name, side, stats,
     moveset: deriveMoveset(build),
-    hp: stats.maxHP, atb: side < 0 ? 0.1 : 0, moveCursor: side < 0 ? 0 : 1,
+    hp: stats.maxHP,
+    // atb stagger: hero side (-1) starts at 0.1 so the two fighters don't act on the same tick
+    atb: side < 0 ? 0.1 : 0, moveCursor: side < 0 ? 0 : 1,
     statuses: [], alive: true, regenAcc: 0,
   };
 }

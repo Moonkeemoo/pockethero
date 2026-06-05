@@ -94,6 +94,15 @@ describe('fighter + status', () => {
     expect(f.statuses[0]!.remaining).toBeCloseTo(3.2, 5);
     expect(f.hp).toBeLessThan(f.stats.maxHP);
   });
+
+  it('a fighter KO\'d purely by burn ends the fight', () => {
+    const f = makeFighter('hero', 'Герой', -1, HERO_BUILD);
+    const bus = makeBus();
+    applyStatus(f, 'burn', 0, 0, bus);
+    f.hp = 5;
+    for (let i = 0; i < 10 && f.hp > 0; i++) tickStatuses(f, 1, bus);
+    expect(f.hp).toBe(0);
+  });
 });
 
 describe('combat loop', () => {

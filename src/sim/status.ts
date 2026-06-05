@@ -17,7 +17,7 @@ interface StatusDef {
   dmgTakenMul?: number; // incoming-damage multiplier (shock)
 }
 
-const STATUS_DEF: Record<string, StatusDef> = {
+export const STATUS_DEF: Record<string, StatusDef> = {
   burn:  { dur: 4.2, tick: 1.0, dmg: 6 },
   slow:  { dur: 5.0, tick: 0,   dmg: 0, atbMul: 0.45 },
   shock: { dur: 3.0, tick: 0,   dmg: 0, dmgTakenMul: 1.5 },
@@ -80,6 +80,14 @@ export function tickStatuses(f: Fighter, dt: number, bus: EventBus): void {
       f.statuses.splice(i, 1);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// applyStatusFromDef — convenience wrapper that applies a status using the
+// canonical STATUS_DEF duration/magnitude (i.e. the move-apply path).
+// ---------------------------------------------------------------------------
+export function applyStatusFromDef(f: Fighter, id: string, bus: EventBus): void {
+  applyStatus(f, id, 0, 0, bus);
 }
 
 // ---------------------------------------------------------------------------
