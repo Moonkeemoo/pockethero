@@ -124,12 +124,15 @@ export class CanvasScene {
   private layout(): void {
     const W = this.W, H = this.H;
     const groundY = H * 0.82;
+    // Uniform cube size across BOTH fighters (prototype uses a fixed cube px),
+    // sized to fit the largest creature in the available combat space.
+    const maxW = Math.max(...this.fighters.map(f => f.meta.wCells));
+    const maxH = Math.max(...this.fighters.map(f => f.meta.hCells));
+    const cell = Math.max(6, Math.round(Math.min(W * 0.46 / maxW, H * 0.58 / maxH)));
     this.fighters.forEach((f, i) => {
       const side: -1 | 1 = i === 0 ? -1 : 1;
-      f.cx = W * 0.5 + side * W * 0.22;
-      f.cell = Math.max(6, Math.round(
-        Math.min(W * 0.30 / f.meta.wCells, H * 0.45 / f.meta.hCells)
-      ));
+      f.cx = W * 0.5 + side * W * 0.25;
+      f.cell = cell;
     });
     // suppress unused warning — groundY needed for context
     void groundY;
@@ -179,12 +182,9 @@ export class CanvasScene {
           this.vfx.shake = Math.max(this.vfx.shake, (2 + 5 * heavy) * critK);
           this.vfx.hitstop = Math.max(this.vfx.hitstop, Math.round((4 + 4 * heavy) * critK) / 60);
 
-          // Squash on hit
+          // Squash on hit (target recoils); the attacker's lunge is driven by its
+          // own move-start attack envelope (see below), matching the prototype.
           tf.anim.squash = Math.min(1, tf.anim.squash + 0.5 + e.amount * 0.04);
-
-          // Lunge actor toward target (verbatim scene.ts lungeDir)
-          const lungeDir: 1 | -1 = actorIdx === 0 ? 1 : -1;
-          af.anim.lunge = lungeDir * 0.7; // scalar, applied as dir*(lunge)*(rowDist)*cell*0.10 in draw-creature
 
           // Spawn VFX at target mid-body
           const pos = this.screenPos(e.target);
@@ -199,6 +199,9 @@ export class CanvasScene {
 
         } else if (e.type === 'move-start') {
           const actorIdx = e.actor === 'p1' ? 0 : 1;
+          // Trigger the full attack animation (wind-up → lunge → recover) + sway
+          // burst — verbatim prototype triggerAttack(); also a brief pre-attack flare.
+          this.fighters[actorIdx]!.anim.attack = 0.0001;
           this.fighters[actorIdx]!.anim.flare = 1;
 
         } else if (e.type === 'ko') {
