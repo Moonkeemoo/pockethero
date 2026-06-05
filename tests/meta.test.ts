@@ -87,10 +87,18 @@ describe('defaultState', () => {
   it('starts at 0 essence', () => {
     expect(freshState().essence).toBe(0);
   });
-  it('has a core-only heroBuild', () => {
+  it('has a balanced starter heroBuild with a core, fitting the L1 grid', () => {
     const s = freshState();
-    expect(s.heroBuild).toHaveLength(1);
-    expect(s.heroBuild[0]!.type).toBe('core');
+    expect(s.heroBuild.length).toBeGreaterThan(1);
+    const cores = s.heroBuild.filter(p => p.type === 'core');
+    expect(cores).toHaveLength(1);
+    expect(cores[0]!.gx).toBe(0);
+    expect(cores[0]!.gy).toBe(0);
+    for (const p of s.heroBuild) {
+      expect(Math.abs(p.gx)).toBeLessThanOrEqual(2);
+      expect(Math.abs(p.gy)).toBeLessThanOrEqual(2);
+    }
+    expect(s.heroBuild.filter(p => p.type === 'force').length).toBeGreaterThanOrEqual(3);
   });
   it('inventory contains placeable cube keys', () => {
     const inv = freshState().inventory;

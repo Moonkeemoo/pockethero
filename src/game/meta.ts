@@ -132,12 +132,21 @@ export function defaultState(): SaveState {
   const r2 = makeLootRng(2);  // lootClicks = 2 after second call
   grantLootInto(inventory, 8, r2);
 
+  // Starter hero: a basic balanced creature (not a lone core) that fits the L1
+  // grid (-2..2) and clears Level 1. Balanced via tools/balance.ts engine sim.
+  const heroBuild: Build = [
+    { gx: 0, gy: 0, type: 'core' },
+    { gx: -1, gy: 0, type: 'vital' }, { gx: -1, gy: 1, type: 'vital' }, { gx: 0, gy: 1, type: 'vital' },
+    { gx: 1, gy: 1, type: 'vital' }, { gx: -1, gy: -1, type: 'vital' },
+    { gx: 1, gy: 0, type: 'force' }, { gx: 2, gy: 0, type: 'force' }, { gx: 1, gy: -1, type: 'force' },
+  ];
+
   return {
     level: 1,
     xp: 0,
     essence: 0,
     inventory,
-    heroBuild: [{ gx: 0, gy: 0, type: 'core' }],
+    heroBuild,
     coins: 0,
     campaign: { level: 1, stage: 0 },
   };

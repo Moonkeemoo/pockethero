@@ -72,8 +72,8 @@ const TIER_NAME_UA: Record<Tier, string> = {
 
 const TIER_MUL: Record<Tier, number> = {
   minor: 1.0,
-  elite: 1.4,
-  boss:  1.8,
+  elite: 1.35,
+  boss:  1.6,
 };
 
 /**
@@ -88,8 +88,8 @@ export function genEnemy(level: number, stage: number): EnemySpec {
   const archetype = ARCHETYPES[archetypeIndex] as Archetype;
   const pool = ARCHETYPE_CUBES[archetype]!;
 
-  const rawTarget = 6 + level * 4 + stage * 1.5;
-  const targetPixels = Math.round(rawTarget * TIER_MUL[tier]);
+  const rawTarget = 2 + (level - 1) * 5 + stage * 1.0;
+  const targetPixels = Math.max(1, Math.round(rawTarget * TIER_MUL[tier]));
 
   // Build a connected blob around [0,0]
   const build: Build = [{ gx: 0, gy: 0, type: 'core' }];
