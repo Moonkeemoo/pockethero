@@ -36,13 +36,16 @@ export function applyStatus(
   magnitude: number,
   bus: EventBus,
 ): void {
+  const def = STATUS_DEF[id];
+  // When duration/magnitude are 0 (move-style apply), fall back to canonical STATUS_DEF values
+  const resolvedDur = duration > 0 ? duration : (def?.dur ?? 0);
+  const resolvedMag = magnitude > 0 ? magnitude : (def?.dmg ?? 0);
   const existing = f.statuses.find((s) => s.id === id);
   if (existing) {
     // POC: refresh duration, keep same instance (existing.dur = def.dur)
-    existing.remaining = duration;
+    existing.remaining = resolvedDur;
   } else {
-    const def = STATUS_DEF[id];
-    const inst: StatusInstance = { id, remaining: duration, magnitude, tickT: def?.tick ?? 0 };
+    const inst: StatusInstance = { id, remaining: resolvedDur, magnitude: resolvedMag, tickT: def?.tick ?? 0 };
     f.statuses.push(inst);
   }
   bus.emit({ type: 'status-applied', target: f.id, status: id, t: 0 });

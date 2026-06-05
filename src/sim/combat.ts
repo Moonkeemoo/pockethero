@@ -251,13 +251,9 @@ export function stepFight(s: FightState, rng: Rng, bus: EventBus): void {
 
     // --- regen (builder poc line 931-939) ---
     if (f.stats.regenPerSec > 0 && f.hp > 0 && f.hp < f.stats.maxHP) {
-      // accumulate using a property attached at runtime; initialise lazily
-      const regenKey = '_regenAcc';
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const fa = f as any;
-      fa[regenKey] = (fa[regenKey] ?? 0) + DT;
-      if (fa[regenKey] >= 1) {
-        fa[regenKey] -= 1;
+      f.regenAcc += DT;
+      if (f.regenAcc >= 1) {
+        f.regenAcc -= 1;
         const heal = Math.round(f.stats.regenPerSec);
         f.hp = Math.min(f.stats.maxHP, f.hp + heal);
         bus.emit({ type: 'heal', target: f.id, amount: heal, t: s.t });

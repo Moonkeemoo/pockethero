@@ -13,6 +13,7 @@ export interface Fighter {
   moveCursor: number;
   statuses: StatusInstance[];
   alive: boolean;
+  regenAcc: number;     // regen accumulator (seconds); fires a heal tick when >= 1
 }
 
 export interface FightState {

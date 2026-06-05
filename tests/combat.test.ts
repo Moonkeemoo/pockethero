@@ -84,6 +84,16 @@ describe('fighter + status', () => {
     expect(slow?.remaining).toBeGreaterThan(4);  // refreshed back to 5
     expect(f.statuses.filter((s) => s.id === 'slow').length).toBe(1); // no duplicate
   });
+
+  it('a move-applied status (duration 0) uses its canonical duration', () => {
+    const f = makeFighter('hero', 'Герой', -1, HERO_BUILD);
+    const bus = makeBus();
+    applyStatus(f, 'burn', 0, 0, bus);            // move-style apply: pull dur/mag from STATUS_DEF
+    expect(f.statuses[0]!.remaining).toBeCloseTo(4.2, 5);   // canonical burn dur
+    tickStatuses(f, 1, bus);                       // 1s later it has ticked and not expired
+    expect(f.statuses[0]!.remaining).toBeCloseTo(3.2, 5);
+    expect(f.hp).toBeLessThan(f.stats.maxHP);
+  });
 });
 
 describe('combat loop', () => {

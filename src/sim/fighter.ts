@@ -9,6 +9,6 @@ export function makeFighter(id: string, name: string, side: -1 | 1, build: Build
     id, name, side, stats,
     moveset: deriveMoveset(build),
     hp: stats.maxHP, atb: side < 0 ? 0.1 : 0, moveCursor: side < 0 ? 0 : 1,
-    statuses: [], alive: true,
+    statuses: [], alive: true, regenAcc: 0,
   };
 }
