@@ -17,7 +17,7 @@ export function startLobby(opts: {
   state: SaveState;
   onBattle: () => void;
   onBuilder: () => void;
-  onChest: () => void;
+  onChest: () => { ok: boolean; cube?: string };
   rewardEvents?: RewardEvent[];
   lastOutcome?: 'levelCleared' | 'defeated';
 }): () => void {
@@ -500,6 +500,9 @@ function stepCounters(dt: number): void {
   if (displayCoins < tc - 0.5) {
     displayCoins = Math.min(tc, displayCoins + (tc - displayCoins) * Math.min(1, dt * 5) + dt * 28);
     coinBump = 0.22;
+  } else if (displayCoins > tc + 0.5) {
+    // Down-tick when a chest is bought (§D.5)
+    displayCoins = Math.max(tc, displayCoins - (displayCoins - tc) * Math.min(1, dt * 6) - dt * 30);
   } else {
     displayCoins = tc;
   }
@@ -567,6 +570,151 @@ function drawButtonFx(): void {
 }
 
 /* ===========================================================================
+   CHEST-OPEN CHOREOGRAPHY (§D.5): rattle → burst → reveal
+   =========================================================================== */
+const RARITY_COL: Record<string, string> = { common: '#aab4c4', rare: '#5aa0ff', epic: '#c060ff', legendary: '#ffcd60' };
+const RARITY_UA: Record<string, string>  = { common: 'Звичайний', rare: 'Рідкісний', epic: 'Епічний', legendary: 'Легендарний' };
+const CHEST_RATTLE = 0.7, CHEST_BURST = 0.4, CHEST_REVEAL = 2.4;
+type ChestPhase = 'idle' | 'rattle' | 'burst' | 'reveal';
+let chestPhase: ChestPhase = 'idle';
+let chestT = 0;
+let chestCube: string | null = null;
+let chestParts: Array<{ x: number; y: number; vx: number; vy: number; life: number; col: string }> = [];
+
+function chestActive(): boolean { return chestPhase !== 'idle'; }
+function chestCenter(): { x: number; y: number } { return { x: W * 0.5, y: H * 0.40 }; }
+
+function startChestOpen(): void {
+  if (chestPhase !== 'idle') return;
+  if (opts.state.coins < CHEST_COST) return; // button is dimmed; ignore taps
+  chestPhase = 'rattle'; chestT = 0; chestCube = null; chestParts = [];
+}
+
+function stepChest(dt: number): void {
+  if (chestPhase === 'idle') return;
+  chestT += dt;
+  if (chestPhase === 'rattle' && chestT >= CHEST_RATTLE) {
+    const r = opts.onChest();              // commit the open at the burst moment
+    if (!r.ok) { chestPhase = 'idle'; toastText = 'Недостатньо монет'; toastTimer = TOAST_DUR; toastAlpha = 1; return; }
+    chestCube = r.cube ?? null;
+    chestPhase = 'burst'; chestT = 0;
+    const c = chestCenter();
+    const col = chestCube ? colorOfType(chestCube) : '#ffe070';
+    chestParts = [];
+    for (let i = 0; i < 30; i++) {
+      const a = Math.random() * Math.PI * 2, sp = 120 + Math.random() * 240;
+      chestParts.push({ x: c.x, y: c.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 70, life: 0.6 + Math.random() * 0.35, col: Math.random() < 0.5 ? col : '#fff7d8' });
+    }
+  } else if (chestPhase === 'burst' && chestT >= CHEST_BURST) {
+    chestPhase = 'reveal'; chestT = 0;
+  } else if (chestPhase === 'reveal' && chestT >= CHEST_REVEAL) {
+    chestPhase = 'idle';
+  }
+  for (const p of chestParts) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 620 * dt; p.life -= dt; }
+  chestParts = chestParts.filter(p => p.life > 0);
+}
+
+function drawChestSprite(cx: number, cy: number, scale: number, open: boolean): void {
+  const w = 78 * scale, h = 56 * scale;
+  ctx.save();
+  ctx.translate(cx, cy);
+  // base
+  ctx.fillStyle = '#6b4a26';
+  roundRect(ctx, -w / 2, -h * 0.1, w, h * 0.7, 6); ctx.fill();
+  ctx.fillStyle = '#caa15a';
+  ctx.fillRect(-w / 2, h * 0.18, w, 5);
+  // lid
+  ctx.save();
+  if (open) ctx.translate(0, -h * 0.35); // lid lifts
+  ctx.fillStyle = '#7d5730';
+  roundRect(ctx, -w / 2, -h * 0.5, w, h * 0.45, 8); ctx.fill();
+  ctx.fillStyle = '#caa15a';
+  roundRect(ctx, -w / 2, -h * 0.5, w, 6, 3); ctx.fill();
+  ctx.restore();
+  // lock
+  ctx.fillStyle = '#e3b341';
+  ctx.fillRect(-6 * scale, -2 * scale, 12 * scale, 12 * scale);
+  ctx.restore();
+}
+
+function drawChestParticles(): void {
+  for (const p of chestParts) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 2));
+    ctx.fillStyle = p.col;
+    ctx.fillRect(p.x - 2.5, p.y - 2.5, 5, 5);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawChest(): void {
+  if (chestPhase === 'idle') return;
+  const c = chestCenter();
+  const dim = chestPhase === 'reveal' ? 0.82 : Math.min(0.72, chestT * 2.2);
+  ctx.fillStyle = `rgba(4,7,12,${dim})`;
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  if (chestPhase === 'rattle') {
+    const intensity = chestT / CHEST_RATTLE;
+    const shake = Math.sin(t * 55) * 6 * intensity;
+    drawChestSprite(c.x + shake, c.y, 1 + 0.05 * Math.abs(Math.sin(t * 28)) * intensity, false);
+    ctx.fillStyle = '#cfd6e0';
+    ctx.font = 'bold 15px "Segoe UI",system-ui,sans-serif';
+    ctx.fillText('Відкриваємо…', c.x, c.y + 70);
+
+  } else if (chestPhase === 'burst') {
+    // Light beam
+    const beam = ctx.createRadialGradient(c.x, c.y, 6, c.x, c.y, 200);
+    beam.addColorStop(0, 'rgba(255,240,180,0.7)');
+    beam.addColorStop(1, 'rgba(255,240,180,0)');
+    ctx.fillStyle = beam;
+    ctx.fillRect(0, 0, W, H);
+    drawChestSprite(c.x, c.y, 1.1, true);
+    drawChestParticles();
+
+  } else if (chestPhase === 'reveal') {
+    drawChestParticles();
+    if (chestCube) {
+      const rar = CUBES[chestCube]?.rarity ?? 'common';
+      const rcol = RARITY_COL[rar] ?? '#aab4c4';
+      const pop = Math.min(1, chestT / 0.25);
+      const sc = 0.5 + 0.5 * (1 - Math.pow(1 - pop, 3));
+      ctx.save();
+      ctx.translate(c.x, c.y); ctx.scale(sc, sc);
+      // halo
+      const halo = ctx.createRadialGradient(0, 0, 8, 0, 0, 90);
+      halo.addColorStop(0, rcol); halo.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.globalAlpha = 0.5; ctx.fillStyle = halo;
+      ctx.beginPath(); ctx.arc(0, 0, 90, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      // the cube
+      ctx.fillStyle = colorOfType(chestCube);
+      ctx.fillRect(-26, -26, 52, 52);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(-26, -26, 52, 12);
+      ctx.strokeStyle = rcol; ctx.lineWidth = 3;
+      ctx.strokeRect(-26, -26, 52, 52);
+      ctx.restore();
+      // labels
+      ctx.fillStyle = rcol;
+      ctx.font = 'bold 13px "Segoe UI",system-ui,sans-serif';
+      ctx.fillText((RARITY_UA[rar] ?? '').toUpperCase(), c.x, c.y + 52);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 22px "Segoe UI",system-ui,sans-serif';
+      ctx.fillText(CUBES[chestCube]?.name ?? chestCube, c.x, c.y + 78);
+    }
+    if (chestT > 0.6) {
+      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(t * 4);
+      ctx.fillStyle = '#8fa0b8';
+      ctx.font = '13px "Segoe UI",system-ui,sans-serif';
+      ctx.fillText('Тапни, щоб продовжити', c.x, H * 0.72);
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+}
+
+/* ===========================================================================
    MAIN RENDER LOOP
    =========================================================================== */
 function frame(now: number): void {
@@ -577,6 +725,7 @@ function frame(now: number): void {
   // Update toast timer
   if (toastTimer > 0) toastTimer -= dt;
   stepCounters(dt);
+  stepChest(dt);
 
   const ground  = heroGroundY();
   const cx      = W * 0.5;
@@ -593,6 +742,7 @@ function frame(now: number): void {
   drawButtons(pulse);
   drawButtonFx();
   drawToast();
+  drawChest();
 
   raf = requestAnimationFrame(frame);
 }
@@ -622,12 +772,18 @@ function onPointerUp(e: PointerEvent): void {
   if (_pdX < 0 || dx * dx + dy * dy > 400) { _pdX = -1; _pdY = -1; return; }
   _pdX = -1; _pdY = -1;
 
+  // While the chest is animating, a tap only dismisses the reveal — buttons are inert.
+  if (chestActive()) {
+    if (chestPhase === 'reveal' && chestT > 0.5) chestPhase = 'idle';
+    return;
+  }
+
   const btns = getButtonRects();
   for (const btn of btns) {
     if (mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h) {
       if (btn.key === 'battle')  opts.onBattle();
       if (btn.key === 'builder') opts.onBuilder();
-      if (btn.key === 'chest')   opts.onChest();
+      if (btn.key === 'chest')   startChestOpen();
       return;
     }
   }

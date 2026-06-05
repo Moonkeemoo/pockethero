@@ -17,14 +17,13 @@ function showLobby(events?: RewardEvent[], lastOutcome?: 'levelCleared' | 'defea
     lastOutcome,
     onBattle:  () => showBattle(),
     onBuilder: () => showBuilder(),
+    // Opens a chest and returns the granted cube. The lobby plays the
+    // rattle→burst→reveal choreography and calls this at the burst moment, so
+    // we do NOT re-mount here — the lobby stays up and reflects the new state.
     onChest:   () => {
       const r = meta.openChest(state);
       meta.save(state);
-      if (r.ok) {
-        showLobby(r.events);
-      } else {
-        showLobby([{ kind: 'info', text: 'Недостатньо монет' }]);
-      }
+      return { ok: r.ok, cube: r.cubes[0] };
     },
   });
 }
