@@ -1,6 +1,7 @@
 // src/render/arena.ts
 import { Container, Graphics, Sprite, Texture } from 'pixi.js';
 import type { Theme } from './types';
+import { mix } from './palette';
 
 /** One diorama arena: cool gradient sky->floor, warm light pool, floor plane,
  *  2-layer parallax, and a soft drop-shadow per creature. Simple-first (no Blender). */
@@ -46,10 +47,4 @@ export class Arena {
     x.fillStyle = grd; x.fillRect(0, 0, 64, 64);
     return Texture.from(c);
   }
-}
-
-function mix(a: number, b: number, t: number): number {
-  const ar = a >> 16 & 255, ag = a >> 8 & 255, ab = a & 255;
-  const br = b >> 16 & 255, bg = b >> 8 & 255, bb = b & 255;
-  return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t);
 }

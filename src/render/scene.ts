@@ -19,6 +19,7 @@ export class Scene {
   private bus!: EventBus;
   private acc = 0;
   private maxHP: number[] = [];
+  private _started = false;
 
   constructor(private app: Application) {
     this.app.stage.addChild(this.arena.root);
@@ -35,12 +36,18 @@ export class Scene {
       { id: 'p2', name: b.name, side: 1, build: b.build },
     );
     this.maxHP = [deriveStats(a.build).maxHP, deriveStats(b.build).maxHP];
-    this.creatures = [new Creature(a.build, routeB), new Creature(b.build, routeB)];
+    // Destroy previous creatures to avoid WebGL buffer leaks on restart
+    for (const c of this.creatures) c.root.destroy({ children: true });
+    this.creatures = [];
     this.world.removeChildren();
+    this.creatures = [new Creature(a.build, routeB), new Creature(b.build, routeB)];
     for (const c of this.creatures) this.world.addChild(c.root);
     this.layout();
-    window.addEventListener('resize', () => this.layout());
-    this.app.ticker.add((tk) => this.frame(tk.deltaMS / 1000));
+    if (!this._started) {
+      window.addEventListener('resize', () => this.layout());
+      this.app.ticker.add((tk) => this.frame(tk.deltaMS / 1000));
+      this._started = true;
+    }
   }
 
   private layout(): void {

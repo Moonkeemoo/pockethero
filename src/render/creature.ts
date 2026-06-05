@@ -18,7 +18,7 @@ export class Creature {
   private t = 0;
   private squash = 0;
   private flashFrames = 0;
-  facing: 1 | -1 = 1;
+  facing: 1 | -1 = 1; // TODO Task 13: apply root.scale.x = this.facing
 
   constructor(private build: Build, private theme: Theme) {
     const gxs = build.map((p) => p.gx), gys = build.map((p) => p.gy);
@@ -75,9 +75,9 @@ export class Creature {
   }
 
   /** Set flash: tint the root white for N frames. */
-  flash(_frames: number, _color: number): void {
-    this.flashFrames = _frames;
-    this.root.tint = _color;
+  flash(frames: number, color: number): void {
+    this.flashFrames = frames;
+    this.root.tint = color;
   }
 
   /** per-frame: advance springs + breathing + squash, lay out cells (spacing-based, crisp). */
