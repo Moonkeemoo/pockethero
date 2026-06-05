@@ -1997,7 +1997,9 @@ function consumeEvents(){
 // ---- BUFF/DEBUFF TRAY (separate from HP bar; +green / -red framed) --------
 function drawStatusTray(f){
   const sx=creatureScreenX(f)*zoom + (1-zoom)*W/2 + camX;
-  const top=(ground-lift_(f)-3.4*PX*f.scale*combatCellMul()-70)*zoom + (1-zoom)*H/2 + camY;
+  // tray sits ABOVE the name+HP-bar cluster (HP name baseline at -52, name top ~-65);
+  // -96 puts the 26px chips at -96..-70, clearing the name with a gap (no overlap).
+  const top=(ground-lift_(f)-3.4*PX*f.scale*combatCellMul()-96)*zoom + (1-zoom)*H/2 + camY;
   const chip=26, gap=6;
   // order: buffs first, then debuffs
   const sorted=[...f.statuses].sort((a,b)=> (STATUS_DEF[b.key].sign)-(STATUS_DEF[a.key].sign));
@@ -2036,11 +2038,6 @@ function drawStatusTray(f){
     ctx.font='bold 11px system-ui'; ctx.textAlign='left';
     ctx.fillStyle=frame; ctx.fillText(pos?'+':'−', x+2, y+11);
     x+=chip+gap;
-  }
-  // legend the very first time-ish (small hint)
-  if(sorted.length){
-    ctx.font='9px system-ui'; ctx.textAlign='center'; ctx.fillStyle='#8aa0bc';
-    ctx.fillText('зелене=бафф  ·  червоне=дебафф', sx, y-4); ctx.textAlign='left';
   }
 }
 
@@ -2175,9 +2172,14 @@ function drawCombat(rawDt){
   drawLog();
   if(phase==='result') drawResultBanner();
 
-  // combat header
-  ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
+  // combat header (static, top-left)
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6';
   ctx.fillText('БІЙ — LOD: чисті блоки + причинний спалах (без гліфів)', 16, 24);
+  // single static buff/debuff legend
+  ctx.font='11px system-ui';
+  ctx.fillStyle='#3fe08a'; ctx.fillText('▭ зелене = бафф', 16, 42);
+  ctx.fillStyle='#e5534b'; ctx.fillText('▭ червоне = дебафф', 132, 42);
 }
 
 /* ============================================================================
