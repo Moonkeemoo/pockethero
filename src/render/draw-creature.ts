@@ -56,11 +56,11 @@ export function drawCreature(
   const lightF = (gx: number, gy: number): number =>
     Math.max(-1, Math.min(1, -(((gx - m.cxg) / m.span) * 0.55 + ((gy - m.cyg) / m.span) * 0.75)));
 
-  // Verbatim from prototype lines 287–288
+  // Punchier motion: deeper squash + stronger breath (director: more impact)
   const squash = a.squash ?? 0;
-  const sq = 1 - squash * 0.18;
-  const st = 1 + squash * 0.14;
-  const breath = 1 + 0.03 * Math.sin(a.t * 2.6 + a.phase);
+  const sq = 1 - squash * 0.28;   // was 0.18 — deeper horizontal squash
+  const st = 1 + squash * 0.22;   // was 0.14 — taller vertical stretch on impact
+  const breath = 1 + 0.05 * Math.sin(a.t * 2.6 + a.phase);  // was 0.03 — livelier idle
   const dir = a.dir ?? 1;
 
   // Drop shadow (verbatim prototype line 291–292, route B uses 0.45)
@@ -82,17 +82,17 @@ export function drawCreature(
     ctx.beginPath(); ctx.arc(cx, cyB, gr, 0, 7); ctx.fill();
   }
 
-  // Pixel cubes (verbatim prototype lines 300–311)
+  // Pixel cubes — punchier motion: stronger sway burst on attack, larger lunge
   for (let idx = 0; idx < build.length; idx++) {
     const p = build[idx]!;
     const bm = behaviorMod(p.type, a.t, idx * 1.7);
     const sway = dir
       * Math.sin(a.t * 3.0 + a.phase + (m.maxY - p.gy) * 0.5)
-      * (0.5 + (a.attack > 0 ? 2.0 * Math.exp(-((a.attack - 1) ** 2) * 6) : 0))
+      * (0.6 + (a.attack > 0 ? 3.5 * Math.exp(-((a.attack - 1) ** 2) * 6) : 0))
       * (m.maxY - p.gy) * 0.05 * cell;
 
     const x = cx + (p.gx * cell * sq) + bm.sx * cell + sway
-              + dir * (a.lunge ?? 0) * (m.maxY - p.gy) * cell * 0.10;
+              + dir * (a.lunge ?? 0) * (m.maxY - p.gy) * cell * 0.16;
     const y = groundY - ((m.maxY - p.gy) * cell) * st * breath + bm.sy * cell;
 
     const cat = CUBES[p.type]?.cat ?? 'body';
