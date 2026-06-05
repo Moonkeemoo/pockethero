@@ -51,6 +51,7 @@ export function drawCubeB(
   neigh: Neighbours,
   lightF: number,
   showGlyph = true,
+  bright = 0,   // per-type behaviorMod brightness pulse (builder.html liveliness)
 ): void {
   const cube = CUBES[type];
   const base = cube?.col ?? '#888888';
@@ -59,9 +60,9 @@ export function drawCubeB(
 
   const rx = Math.round(x - w / 2), ry = Math.round(y - w / 2), rw = Math.round(w);
 
-  // Route-B gradient (verbatim from prototype lines 210–213)
-  const top = lightenHex(base, 0.16 + 0.16 * Math.max(0, lightF) + (fl > 0.1 ? fl * 0.6 : 0));
-  const bot = darkenHex(desatHex(base, 0.10), 0.18 - 0.10 * Math.max(0, lightF));
+  // Route-B gradient (verbatim from prototype lines 210–213) + behaviorMod pulse
+  const top = lightenHex(base, 0.16 + 0.16 * Math.max(0, lightF) + (fl > 0.1 ? fl * 0.6 : 0) + bright);
+  const bot = lightenHex(darkenHex(desatHex(base, 0.10), 0.18 - 0.10 * Math.max(0, lightF)), bright * 0.6);
   const grd = ctx.createLinearGradient(rx, ry, rx, ry + rw);
   grd.addColorStop(0, top);
   grd.addColorStop(1, bot);

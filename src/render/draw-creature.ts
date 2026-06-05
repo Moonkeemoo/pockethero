@@ -109,7 +109,7 @@ export function drawCreature(
       R: m.set.has((p.gx + 1) + ',' + p.gy),
     };
 
-    drawCubeB(ctx, x, y, w, p.type, fl, N, lf, true);
+    drawCubeB(ctx, x, y, w, p.type, fl, N, lf, true, bm.bright);
   }
   // No eye — director LOCKED "No faces" (route B: STATE.faces is false)
 }
