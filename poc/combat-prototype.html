@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>PocketHero — Core Combat Feel Prototype</title>
+<style>
+  html,body{margin:0;height:100%;background:#070a0f;overflow:hidden;
+            font-family:"Segoe UI",system-ui,sans-serif;color:#cfd6e0}
+  #c{display:block;width:100%;height:100%;image-rendering:pixelated}
+  #tag{position:fixed;left:10px;top:8px;color:#cfd6e0;font-size:12px;opacity:.7;
+       background:#0008;padding:4px 8px;border-radius:6px;pointer-events:none;letter-spacing:.3px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="tag">PocketHero · прототип бою · 2.5D авто-баттлер</div>
+<script>
+"use strict";
+/* ============================================================================
+   PocketHero — CORE COMBAT FEEL PROTOTYPE
+   One file, vanilla JS + Canvas2D. Deterministic (Mulberry32 seed).
+   SIM logic and RENDER logic are kept separate so this ports cleanly to PixiJS.
+
+   SECTIONS:
+     0. TUNABLE CONSTANTS (director knobs)
+     1. SEEDED RNG
+     2. CREATURE ART (SHAPE / PAL — reused from billboard base)
+     3. MOVESET DATA (5 distinct moves, schools, statuses)
+     4. SIM: combatants, ATB loop, resolution, EVENT BUS
+     5. RENDER: arena 2.5D, creature soft-body, projectiles, VFX, particles
+     6. UI: HP bars, floating text, combat log (Ukrainian)
+     7. CAMERA / JUICE: shake, hit-stop, slow-mo, zoom, light flash
+     8. MAIN LOOP
+   ========================================================================== */
+
+/* ============================================================================
+   0. TUNABLE CONSTANTS — the knobs the director can play with
+   ========================================================================== */
+const SEED_BASE   = 1337;     // deterministic per loop: seed = SEED_BASE + loopCount
+const PX          = 13;       // creature pixel size
+const SPRING_K    = 240;      // per-pixel soft-body stiffness
+const SPRING_D    = 15;       // per-pixel soft-body damping
+const SHAKE_BASE  = 9;        // base screenshake magnitude on a normal hit
+const SHAKE_CRIT  = 22;       // screenshake on crit/explosion
+const HITSTOP_HIT = 0.055;    // base hit-stop seconds (scaled by hit size)
+const SLOWMO_CRIT = 0.30;     // time scale during crit slow-mo (1 = normal)
+const SLOWMO_KO   = 0.22;     // time scale during KO slow-mo
+const ZOOM_PUNCH  = 0.14;     // extra zoom on a big hit
+const ZOOM_BREATH = 0.012;    // amplitude of constant breathing zoom
+const ATB_GLOBAL  = 1.0;      // global ATB speed multiplier (pacing)
+const KO_PAUSE    = 2.1;      // seconds banner stays before reset
+
+/* ============================================================================
+   1. SEEDED RNG — Mulberry32
+   ========================================================================== */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let rng = mulberry32(SEED_BASE);
+const rnd  = () => rng();
+const rRange = (a,b) => a + (b-a)*rng();
+const rPick  = arr => arr[(rng()*arr.length)|0];
+
+/* ============================================================================
+   2. CREATURE ART — reused pixel-blob from billboard-2_5d.html
+   ========================================================================== */
+const PAL = { body:'#8a8f98', attack:'#e0483f', armor:'#4a78c8', core:'#f2c14e', leg:'#6b7079' };
+const SHAPE = [
+  [0,0,'core'],
+  [-1,0,'body'],[0,1,'body'],[-1,1,'body'],[1,1,'body'],
+  [-1,2,'body'],[0,2,'body'],[1,2,'body'],
+  [-2,1,'armor'],[-2,2,'armor'],
+  [1,0,'attack'],[2,0,'attack'],[3,0,'attack'],
+  [-1,3,'leg'],[1,3,'leg'],
+];
+
+/* ============================================================================
+   3. MOVESET DATA — each move INSTANTLY distinguishable (goal #2)
+   School colors are central to "readable magic".
+   ========================================================================== */
+const SCHOOL = {
+  fire:  { name:'Вогонь', glyph:'🔥', col:'#ff7a2a', col2:'#ffd24a', light:'#ff5a1e' },
+  frost: { name:'Лід',    glyph:'❄', col:'#5ad6ff', col2:'#bff0ff', light:'#3aa6ff' },
+};
+// kind, label (UK), windUp (anticipation s), recover (s), power, type, ranged?, school?, status?, special?
+const MOVES = {
+  fist:  { kind:'fist',  label:"б'є кулаком",          windUp:0.10, recover:0.18, power:9,  type:'phys', ranged:false, double:true,  weight:3.0 },
+  sword: { kind:'sword', label:"б'є мечем",            windUp:0.28, recover:0.34, power:20, type:'phys', ranged:false, critBonus:0.22, weight:2.0 },
+  bow:   { kind:'bow',   label:"стріляє з лука",       windUp:0.22, recover:0.26, power:15, type:'phys', ranged:true,  weight:1.6 },
+  fire:  { kind:'fire',  label:"кастує Вогняну кулю",  windUp:0.40, recover:0.36, power:18, type:'magic',ranged:true,  school:'fire',  status:'burn', weight:1.3 },
+  frost: { kind:'frost', label:"кастує Крижану стрілу",windUp:0.40, recover:0.36, power:14, type:'magic',ranged:true,  school:'frost', status:'slow', weight:1.3 },
+};
+const MOVE_ORDER = ['fist','sword','bow','fire','frost']; // cycle bias so viewer sees them all
+
+const STATUS_DEF = {
+  burn: { uk:'Підпал',      glyph:'🔥', col:'#ff7a2a', dur:4.2, tick:1.0, dmg:6 },
+  slow: { uk:'Сповільнення',glyph:'❄', col:'#5ad6ff', dur:5.0, tick:0,   dmg:0, atbMul:0.45 },
+};
+
+/* ============================================================================
+   4. SIM — combatants, ATB loop, resolution, EVENT BUS
+   The render layer ONLY reacts to events emitted here. This is the heart of
+   "readable events": SIM decides WHAT happened, RENDER decides how it LOOKS.
+   ========================================================================== */
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W, H, ground;
+function resize(){ W = cv.width = innerWidth; H = cv.height = innerHeight; ground = H*0.70; }
+addEventListener('resize', resize); resize();
+
+function makeFighter(name, side, enemyTint){
+  return {
+    name, side, enemyTint,          // side: -1 left(hero), +1 right(enemy)
+    homeX: side<0 ? W*0.30 : W*0.70,
+    face:  side<0 ? 1 : -1,
+    maxHP: 120, hp: 120, armor: 4,
+    speed: side<0 ? 1.00 : 0.92,    // gauge fill rate (hero slightly faster)
+    atb: side<0 ? 0.10 : 0.0,       // ATB gauge 0..1
+    statuses: [],                   // {key, dur, tickT}
+    moveCursor: (side<0?0:2),       // cycles MOVE_ORDER for variety
+    // ---- render/anim state (springs etc. live here too for convenience) ----
+    px: SHAPE.map(([x,y,t]) => ({ gx:(side<0?1:-1)*x, gy:y, t, ox:0,oy:0,vx:0,vy:0 })),
+    advance:0, knock:0, knockV:0,
+    hpShown:120, hpChip:120, chipDelay:0,
+    flash:0, charge:0, chargeSchool:null, squash:0, alive:true,
+  };
+}
+let hero, enemy, fighters;
+function buildFighters(){
+  hero  = makeFighter('Hero',  -1, false);
+  enemy = makeFighter('Enemy', +1, true);
+  fighters = [hero, enemy];
+}
+
+// --- EVENT BUS ---------------------------------------------------------------
+const events = [];               // queue consumed by render layer each frame
+function emit(e){ events.push(e); }
+
+// --- combat state ------------------------------------------------------------
+let phase = 'fight';             // 'fight' | 'ko'
+let koTimer = 0, winner = null, loopCount = 0;
+const actors = [];               // in-flight move "actors" (windup->release->recover)
+const projectiles = [];          // traveling arrows/spells
+
+function pickMove(f){
+  // Weighted cycle: bias toward the next move in MOVE_ORDER so all types show,
+  // but keep weighted randomness for non-metronomic feel.
+  const pool = [];
+  for(let i=0;i<MOVE_ORDER.length;i++){
+    const k = MOVE_ORDER[i];
+    let w = MOVES[k].weight;
+    if(i === f.moveCursor % MOVE_ORDER.length) w *= 3.0;  // nudge the cursor move
+    for(let j=0;j<w*10;j++) pool.push(k);
+  }
+  f.moveCursor++;
+  return MOVES[rPick(pool)];
+}
+
+function startAction(f){
+  const tgt = (f===hero) ? enemy : hero;
+  const move = pickMove(f);
+  actors.push({ f, tgt, move, t:0, stage:'windup', fired:false });
+  // anticipation squash + magic charge glow
+  f.squash = (move.type==='magic' || move.kind==='sword') ? 1 : 0.5;
+  if(move.type==='magic'){ f.charge = 0.0001; f.chargeSchool = move.school; }
+  emit({ kind:'telegraph', source:f, move });
+}
+
+// Resolve a hit on impact (melee impact frame OR projectile arrival).
+function resolveHit(f, tgt, move){
+  // ----- hit / dodge / crit rolls (clear formula) -----
+  const dodge = tgt.statuses.some(s=>s.key==='slow') ? 0.05 : 0.12; // base dodge
+  const hitChance = 0.84 - dodge;
+  const isHit = rnd() < hitChance;
+  if(!isHit){
+    emit({ kind:'resolve', move, source:f, target:tgt, hit:false, dodge:true, crit:false, damage:0 });
+    return;
+  }
+  let critChance = 0.12 + (move.critBonus||0);
+  const isCrit = rnd() < critChance;
+  let dmg = move.power + Math.floor(rRange(-2,3));
+  if(move.type==='phys') dmg = Math.max(1, dmg - tgt.armor);   // armor reduces phys
+  else                   dmg = Math.max(1, dmg);               // magic ignores armor
+  if(isCrit) dmg = Math.round(dmg * 1.8);
+  applyDamage(tgt, dmg, f===hero);
+
+  // status application (magic schools)
+  let appliedStatus = null;
+  if(move.status){ applyStatus(tgt, move.status); appliedStatus = move.status; }
+
+  emit({ kind:'resolve', move, source:f, target:tgt, hit:true, dodge:false,
+         crit:isCrit, damage:dmg, status:appliedStatus });
+
+  if(tgt.hp<=0 && tgt.alive){ killFighter(tgt, f); }
+}
+
+function applyDamage(tgt, dmg, fromHero){
+  tgt.hp = Math.max(0, tgt.hp - dmg);
+  tgt.chipDelay = 0.45;          // delay the white "chip" bar drain for readability
+  tgt.flash = 1;                 // white flash 2-3 frames
+}
+
+function applyStatus(tgt, key){
+  const def = STATUS_DEF[key];
+  const existing = tgt.statuses.find(s=>s.key===key);
+  if(existing){ existing.dur = def.dur; }
+  else tgt.statuses.push({ key, dur:def.dur, tickT: def.tick });
+}
+
+function killFighter(tgt, by){
+  tgt.alive = false;
+  tgt.hp = 0;
+  phase = 'ko'; winner = by; koTimer = KO_PAUSE;
+  triggerSlowmo(SLOWMO_KO, 1.1);
+  shake = SHAKE_CRIT*1.3;
+  // scatter ALL body pixels via debris system (existing KO behaviour, amped)
+  const cx = creatureScreenX(tgt), cy = ground - 3.2*PX;
+  for(const p of tgt.px){
+    debris.push({ x: cx + p.gx*PX, y: cy + p.gy*PX,
+      vx:(rnd()-.5)*520, vy:-(180+rnd()*420),
+      c: colorOf(tgt,p.t), life:1.4+rnd()*0.8, sz:PX });
+  }
+  emit({ kind:'ko', winner:by, loser:tgt });
+}
+
+// --- ATB / status SIM step ---------------------------------------------------
+function simStep(dt){
+  if(phase==='ko'){
+    koTimer -= dt;
+    if(koTimer<=0){ resetFight(); }
+    return;
+  }
+  for(const f of fighters){
+    if(!f.alive) continue;
+    // status processing
+    for(let i=f.statuses.length-1;i>=0;i--){
+      const s = f.statuses[i]; const def = STATUS_DEF[s.key];
+      s.dur -= dt;
+      if(def.tick>0){
+        s.tickT -= dt;
+        if(s.tickT<=0 && f.hp>0){
+          s.tickT += def.tick;
+          const dmg = def.dmg;
+          f.hp = Math.max(0, f.hp - dmg); f.chipDelay=0.4; f.flash=0.6;
+          emit({ kind:'statusTick', target:f, status:s.key, damage:dmg });
+          if(f.hp<=0 && f.alive){ killFighter(f, (f===hero?enemy:hero)); }
+        }
+      }
+      if(s.dur<=0) f.statuses.splice(i,1);
+    }
+    if(!f.alive) continue;
+    // ATB gauge — slow status reduces fill rate
+    let atbMul = 1;
+    for(const s of f.statuses){ const d=STATUS_DEF[s.key]; if(d.atbMul) atbMul*=d.atbMul; }
+    const busy = actors.some(a=>a.f===f); // don't refill while mid-action
+    if(!busy){
+      f.atb += dt * f.speed * 0.55 * ATB_GLOBAL * atbMul;
+      if(f.atb>=1){ f.atb=0; startAction(f); }
+    }
+  }
+  // advance in-flight move actors (windup -> release -> recover)
+  stepActors(dt);
+  stepProjectiles(dt);
+}
+
+function stepActors(dt){
+  for(let i=actors.length-1;i>=0;i--){
+    const a = actors[i]; a.t += dt; const m = a.move;
+    if(a.stage==='windup'){
+      a.f.charge = (m.type==='magic') ? Math.min(1, a.t/m.windUp) : 0;
+      if(a.t>=m.windUp){ a.stage='release'; a.t=0; a.f.charge=0; releaseMove(a); }
+    } else if(a.stage==='release'){
+      // melee lands quickly; ranged spawns projectile (resolved on arrival)
+      if(a.t>=0.06){ a.stage='recover'; a.t=0; }
+    } else { // recover
+      if(a.t>=m.recover){ actors.splice(i,1); }
+    }
+  }
+}
+
+function releaseMove(a){
+  const { f, tgt, move } = a;
+  // lunge stretch
+  for(const p of f.px){ p.vx += f.face*120; }
+  if(move.ranged){
+    spawnProjectile(f, tgt, move);
+  } else {
+    // melee: immediate impact (and possible double-hit for fist)
+    resolveHit(f, tgt, move);
+    if(move.double && rnd()<0.85){
+      // queue a quick second jab via a tiny follow actor
+      setTimeout2(0.12, ()=>{ if(tgt.alive) resolveHit(f, tgt, move); });
+    }
+    meleeImpactFX(f, tgt, move);
+  }
+}
+
+// tiny deterministic-ish delayed callback bucket (driven by sim dt, not wall clock)
+const delayed = [];
+function setTimeout2(sec, fn){ delayed.push({ t:sec, fn }); }
+function stepDelayed(dt){
+  for(let i=delayed.length-1;i>=0;i--){ const d=delayed[i]; d.t-=dt; if(d.t<=0){ d.fn(); delayed.splice(i,1);} }
+}
+
+function spawnProjectile(f, tgt, move){
+  const sx = creatureScreenX(f) + f.face*22;
+  const sy = ground - 3.0*PX;
+  const ex = creatureScreenX(tgt);
+  const ey = ground - 3.0*PX;
+  const dist = Math.abs(ex-sx);
+  const speed = move.kind==='bow' ? 1300 : 760;
+  const dur = dist/speed;
+  projectiles.push({
+    move, f, tgt, sx, sy, ex, ey, t:0, dur,
+    arc: move.kind==='bow' ? 90 : 60,   // px of vertical arc
+    school: move.school,
+  });
+  if(move.school) emit({ kind:'cast', source:f, school:move.school }); // light flash at cast
+}
+
+function stepProjectiles(dt){
+  for(let i=projectiles.length-1;i>=0;i--){
+    const p = projectiles[i]; p.t += dt;
+    const u = p.t/p.dur;
+    if(u>=1){
+      // arrival -> resolve + impact FX
+      resolveHit(p.f, p.tgt, p.move);
+      projectileImpactFX(p);
+      projectiles.splice(i,1);
+    }
+  }
+}
+
+function resetFight(){
+  loopCount++;
+  rng = mulberry32(SEED_BASE + loopCount);   // re-seed: each loop differs, still deterministic
+  actors.length=0; projectiles.length=0; delayed.length=0;
+  particles.length=0; debris.length=0; floaters.length=0;
+  buildFighters();
+  phase='fight'; winner=null;
+  pushLog('— Новий бій #' + (loopCount+1) + ' —', '#9fb0c8');
+}
+
+/* ============================================================================
+   5. RENDER — arena 2.5D, creature soft-body, projectiles, VFX, particles
+   ========================================================================== */
+let t = 0;                 // wall-clock-ish render time
+let shake = 0, hitstop = 0;
+const debris    = [];      // scattered solid pixels (KO + hit)
+const particles = [];      // fire/frost/spark/dust particles
+const dust      = [];      // ambient floating motes
+const floaters  = [];      // floating combat text
+let lightFlash  = 0, lightCol = '#fff';
+
+// init ambient dust
+for(let i=0;i<46;i++){
+  dust.push({ x:rnd()*innerWidth, y:rnd()*innerHeight*0.85,
+    z:0.3+rnd()*0.7, sp:6+rnd()*16, ph:rnd()*7 });
+}
+
+function colorOf(f, type){
+  if(!f.enemyTint) return PAL[type];
+  if(type==='core')   return '#b06bd6';   // enemy purple core
+  if(type==='armor')  return '#7a4ec8';
+  if(type==='attack') return '#e0483f';
+  return PAL[type];
+}
+function creatureScreenX(f){ return f.homeX + f.face*f.advance + f.knock; }
+function depthScale(f){
+  const back = Math.max(0, f.knock * f.face);
+  return 1 - Math.min(0.20, back*0.0017);
+}
+
+// --- soft-body + knock springs update (render-side physics) -----------------
+function physStep(dt){
+  for(const f of fighters){
+    for(const p of f.px){
+      const ax = -SPRING_K*p.ox - SPRING_D*p.vx;
+      const ay = -SPRING_K*p.oy - SPRING_D*p.vy;
+      p.vx += ax*dt; p.vy += ay*dt; p.ox += p.vx*dt; p.oy += p.vy*dt;
+    }
+    const ka = -34*f.knock - 7.5*f.knockV;
+    f.knockV += ka*dt; f.knock += f.knockV*dt;
+    // advance easing toward target (windup pulls back, release lunges in)
+    const a = actors.find(x=>x.f===f);
+    let want = 0;
+    if(a){
+      if(a.stage==='windup')  want = -0.12;                 // anticipation step back
+      else if(a.stage==='release' && !a.move.ranged) want = 1.0; // melee lunge in
+      else if(a.stage==='release') want = 0.15;
+    }
+    const reach = (Math.abs((f===hero?enemy:hero).homeX - f.homeX) - 3.6*PX);
+    f.advance += (want*reach - f.advance) * Math.min(1, 11*dt);
+    // decay transient render flags
+    f.flash  = Math.max(0, f.flash  - dt*7);
+    f.squash = Math.max(0, f.squash - dt*5);
+    // hp bar smoothing
+    f.hpShown += (f.hp - f.hpShown) * Math.min(1, 9*dt);
+    if(f.chipDelay>0) f.chipDelay -= dt;
+    else f.hpChip += (f.hp - f.hpChip) * Math.min(1, 4*dt);
+  }
+  // debris
+  for(let i=debris.length-1;i>=0;i--){ const d=debris[i];
+    d.vy += 980*dt; d.x+=d.vx*dt; d.y+=d.vy*dt; d.life-=dt;
+    if(d.y>ground){ d.y=ground; d.vy*=-0.35; d.vx*=0.6; }
+    if(d.life<=0) debris.splice(i,1);
+  }
+  // particles
+  for(let i=particles.length-1;i>=0;i--){ const p=particles[i];
+    p.vy += (p.grav||0)*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt;
+    p.vx*=Math.pow(p.drag||0.02,dt); p.vy*=Math.pow(p.drag||0.02,dt);
+    if(p.life<=0) particles.splice(i,1);
+  }
+  // ambient dust drift
+  for(const d of dust){ d.x += d.sp*dt*0.4; d.y -= d.sp*dt*0.12; if(d.x>W+5)d.x=-5; if(d.y<-5)d.y=H*0.85; }
+  // floaters
+  for(let i=floaters.length-1;i>=0;i--){ const fl=floaters[i];
+    fl.t+=dt; fl.y -= (fl.vy||32)*dt; fl.vy=(fl.vy||32)*Math.pow(0.05,dt);
+    fl.pop = Math.max(0, (fl.pop||0)-dt*5);
+    if(fl.t>fl.life) floaters.splice(i,1);
+  }
+  // decay global fx
+  shake *= Math.pow(0.0001, dt);
+  lightFlash = Math.max(0, lightFlash - dt*3.2);
+}
+
+// --- particle helpers --------------------------------------------------------
+function spark(x,y,n,col,spd){
+  for(let i=0;i<n;i++){ const a=rnd()*6.283;
+    particles.push({ x,y, vx:Math.cos(a)*spd*(0.4+rnd()), vy:Math.sin(a)*spd*(0.4+rnd())-40,
+      life:0.3+rnd()*0.35, col, sz:2+rnd()*3, grav:300, drag:0.02 }); }
+}
+function burst(x,y,n,cols,spd,grav,sz){
+  for(let i=0;i<n;i++){ const a=rnd()*6.283, s=spd*(0.3+rnd());
+    particles.push({ x,y, vx:Math.cos(a)*s, vy:Math.sin(a)*s-20,
+      life:0.4+rnd()*0.6, col:rPick(cols), sz:sz*(0.6+rnd()), grav:grav, drag:0.05 }); }
+}
+
+function meleeImpactFX(f, tgt, move){
+  const ix = creatureScreenX(tgt) - f.face*18, iy = ground - 3.0*PX;
+  if(move.kind==='fist'){ spark(ix,iy,6,'#ffffff',180); }
+  else if(move.kind==='sword'){
+    // slashing arc marker — handled in draw via transient
+    slashFX.push({ x:ix, y:iy, dir:f.face, t:0, life:0.22 });
+    spark(ix,iy,10,'#dfe7ff',260);
+  }
+}
+const slashFX = [];
+
+function projectileImpactFX(p){
+  const ix=p.ex, iy=p.ey;
+  if(p.move.kind==='bow'){
+    spark(ix,iy,9,'#e8d9a0',240);
+    burst(ix,iy,6,['#caa15a','#8a6a30'],120,400,3); // "thunk"
+  } else if(p.school==='fire'){
+    burst(ix,iy,26,['#ff7a2a','#ffd24a','#ff3b1e','#9a2a10'],340,200,4);
+    lightFlash=0.9; lightCol=SCHOOL.fire.light; shake=Math.max(shake,SHAKE_CRIT);
+    triggerZoom(0.10);
+  } else if(p.school==='frost'){
+    burst(ix,iy,24,['#5ad6ff','#bff0ff','#3aa6ff','#dffaff'],280,120,4);
+    // ice shards
+    for(let i=0;i<8;i++){ const a=-1.2-rnd()*0.7;
+      particles.push({ x:ix,y:iy, vx:Math.cos(a)*(120+rnd()*120)*(rnd()<.5?-1:1),
+        vy:Math.sin(a)*(180+rnd()*160), life:0.5+rnd()*0.4, col:'#bff0ff', sz:2+rnd()*2, grav:500, drag:0.05 }); }
+    lightFlash=0.8; lightCol=SCHOOL.frost.light;
+  }
+}
+
+/* ============================================================================
+   6. UI — HP bars, floating combat text, combat log (consumes EVENT BUS)
+   ========================================================================== */
+const log = [];  // {text, col}
+function pushLog(text, col){ log.push({text, col:col||'#dfe6f0'}); if(log.length>9) log.shift(); }
+
+function addFloater(f, text, col, big){
+  floaters.push({ x:creatureScreenX(f), y:ground-3.6*PX-18, t:0, life: big?1.3:0.95,
+    text, col, big:!!big, vy: big?20:34, pop: big?1:0.4 });
+}
+
+// EVENT BUS CONSUMER — translate sim events into VFX + log + floaters
+function consumeEvents(){
+  while(events.length){
+    const e = events.shift();
+    if(e.kind==='telegraph'){
+      // brief visual cue handled by squash/charge; no log line (keeps log clean)
+    }
+    else if(e.kind==='cast'){
+      const sc = SCHOOL[e.school];
+      lightFlash=Math.max(lightFlash,0.5); lightCol=sc.light;
+      const x=creatureScreenX(e.source), y=ground-3.0*PX;
+      burst(x,y,10,[sc.col,sc.col2],90,-20,3);
+    }
+    else if(e.kind==='resolve'){
+      const s=e.source, tg=e.target, m=e.move;
+      if(e.dodge){
+        addFloater(tg, rnd()<0.5?'УХИЛ':'ПРОМАХ', '#9aa6b4', false);
+        pushLog(`${tg.name} ${rnd()<0.5?'ухилився':'уник удару'}`, '#9aa6b4');
+        spark(creatureScreenX(tg), ground-3*PX, 4, '#7e8a99', 90);
+      } else {
+        // floating damage text
+        if(e.crit){
+          addFloater(tg, e.damage+'', '#ffe24a', true);
+          triggerSlowmo(SLOWMO_CRIT, 0.55); triggerZoom(ZOOM_PUNCH);
+          shake=Math.max(shake,SHAKE_CRIT); hitstop=Math.max(hitstop,HITSTOP_HIT*2.2);
+        } else {
+          addFloater(tg, e.damage+'', '#ffffff', false);
+          shake=Math.max(shake, SHAKE_BASE*Math.min(2, e.damage/14));
+          hitstop=Math.max(hitstop, HITSTOP_HIT*Math.min(2.2, 0.7+e.damage/26));
+        }
+        // log line — school + status labelled (goal #2)
+        let line = `${s.name} ${m.label}`;
+        if(m.school) line += ` [${SCHOOL[m.school].name}]`;
+        line += ` — ${e.damage}`;
+        if(e.crit) line += ' (КРИТ!)';
+        if(e.status) line += `, накладено ${STATUS_DEF[e.status].uk}`;
+        pushLog(line, e.crit ? '#ffe24a' : (m.school?SCHOOL[m.school].col:'#dfe6f0'));
+        // knockback into depth + jiggle (existing feel)
+        const dir = Math.sign(tg.homeX - s.homeX) || 1;
+        tg.knockV += dir*(e.crit?620:380);
+        for(const p of tg.px){ p.vx += dir*(180+e.damage*6)+(rnd()-.5)*120; p.vy+=(rnd()-.7)*150; }
+        // a few pixels chip off on big hits
+        if(e.damage>14){
+          const cx=creatureScreenX(tg), cy=ground-2*PX;
+          for(let i=0;i<3;i++){ const pk=rPick(tg.px);
+            debris.push({ x:cx+pk.gx*PX, y:cy+pk.gy*PX, vx:dir*(120+rnd()*180),
+              vy:-(120+rnd()*220), c:colorOf(tg,pk.t), life:0.8+rnd()*0.4, sz:PX*0.8 }); }
+        }
+      }
+    }
+    else if(e.kind==='statusTick'){
+      const def=STATUS_DEF[e.status];
+      addFloater(e.target, e.damage+'', def.col, false);
+      pushLog(`${e.target.name} ${e.status==='burn'?'горить':'мерзне'} — ${e.damage}`, def.col);
+      // flame/frost particles on victim
+      const x=creatureScreenX(e.target), y=ground-2.4*PX;
+      if(e.status==='burn') burst(x,y,8,['#ff7a2a','#ffd24a'],80,-160,3);
+    }
+    else if(e.kind==='ko'){
+      pushLog(`K.O. — ${e.winner.name} переміг!`, '#ffd24a');
+      lightFlash=1; lightCol='#fff';
+    }
+  }
+}
+
+/* ============================================================================
+   7. CAMERA / JUICE
+   ========================================================================== */
+let timeScale = 1, slowmoT = 0, slowmoTarget = 1;
+let zoom = 1, zoomPunch = 0;
+function triggerSlowmo(scale, dur){ slowmoTarget=scale; slowmoT=dur; }
+function triggerZoom(amount){ zoomPunch=Math.max(zoomPunch, amount); }
+
+function cameraStep(rdt){
+  // slow-mo handling
+  if(slowmoT>0){ slowmoT-=rdt; timeScale += (slowmoTarget-timeScale)*Math.min(1,10*rdt); }
+  else timeScale += (1-timeScale)*Math.min(1,6*rdt);
+  // zoom: constant breathing + transient punch decay
+  zoomPunch *= Math.pow(0.0009, rdt);
+  const breathe = 1 + ZOOM_BREATH*Math.sin(t*1.3);
+  zoom += ((breathe+zoomPunch) - zoom) * Math.min(1, 8*rdt);
+}
+
+/* ============================================================================
+   5b. DRAW ROUTINES
+   ========================================================================== */
+function drawArena(){
+  // sky gradient
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#141b27'); g.addColorStop(.55,'#10161f'); g.addColorStop(1,'#080b11');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // faint horizon glow
+  const hg = ctx.createRadialGradient(W*0.5, ground, 10, W*0.5, ground, W*0.7);
+  hg.addColorStop(0,'rgba(60,90,140,0.18)'); hg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=hg; ctx.fillRect(0,0,W,H);
+  // back wall / horizon line
+  ctx.strokeStyle='rgba(120,150,190,0.10)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(0,ground); ctx.lineTo(W,ground); ctx.stroke();
+  // floor
+  ctx.fillStyle='#161d2a';
+  ctx.beginPath();
+  ctx.moveTo(W*0.5-60, ground); ctx.lineTo(W*0.5+60, ground);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+  // perspective grid (fading)
+  for(let i=1;i<8;i++){
+    const u=i/8, y=ground+(H-ground)*u*u;
+    ctx.strokeStyle=`rgba(70,100,150,${0.22*(1-u)})`; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+  }
+  // converging verticals
+  const vp=W*0.5;
+  for(let i=-6;i<=6;i++){
+    if(i===0) continue;
+    const topX = vp + i*16, botX = vp + i*(W*0.5/3);
+    ctx.strokeStyle='rgba(70,100,150,0.10)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(topX,ground); ctx.lineTo(botX,H); ctx.stroke();
+  }
+  // ambient dust motes
+  for(const d of dust){
+    ctx.globalAlpha=0.10+0.18*d.z;
+    ctx.fillStyle='#bcd0ee';
+    const s=1+d.z*2; ctx.fillRect(d.x, d.y, s, s);
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawShadow(f){
+  const s=depthScale(f), sx=creatureScreenX(f);
+  ctx.fillStyle='rgba(0,0,0,0.38)';
+  ctx.beginPath(); ctx.ellipse(sx, ground+3, 36*s, 9*s, 0,0,7); ctx.fill();
+}
+
+function drawCreature(f){
+  if(!f.alive) return;  // KO'd creatures are debris
+  const s=depthScale(f);
+  const sx=creatureScreenX(f);
+  const lift=(1-s)*120;
+  const breath=1+0.03*Math.sin(t*2.6+(f.face>0?1.5:0));
+  const baseY=ground-lift;
+  // squash/stretch from anticipation
+  const sq=1 - f.squash*0.18, st=1 + f.squash*0.14;
+  // magic charge glow
+  if(f.charge>0 && f.chargeSchool){
+    const sc=SCHOOL[f.chargeSchool];
+    const r=14+f.charge*22;
+    const gg=ctx.createRadialGradient(sx, baseY-3*PX, 2, sx, baseY-3*PX, r);
+    gg.addColorStop(0, sc.col2); gg.addColorStop(0.5, sc.col); gg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.globalAlpha=0.6*f.charge; ctx.fillStyle=gg;
+    ctx.beginPath(); ctx.arc(sx, baseY-3*PX, r, 0, 7); ctx.fill(); ctx.globalAlpha=1;
+  }
+  // pixels
+  for(const p of f.px){
+    const x = sx + (p.gx*PX*sq + p.ox)*s;
+    const y = baseY - (3.2*PX) + ((p.gy*PX)*breath*st + p.oy)*s;
+    const w = PX*s + 0.6;
+    ctx.fillStyle = f.flash>0.15 ? '#ffffff' : colorOf(f, p.t);
+    ctx.fillRect(x-w/2, y-w/2, w, w);
+    // top highlight
+    ctx.fillStyle='rgba(255,255,255,0.10)';
+    ctx.fillRect(x-w/2, y-w/2, w, Math.max(1,w*0.18));
+  }
+  // slow status: blue overlay tint
+  if(f.statuses.some(st2=>st2.key==='slow')){
+    ctx.globalAlpha=0.18; ctx.fillStyle='#5ad6ff';
+    ctx.fillRect(sx-30*s, baseY-3.4*PX-6, 60*s, 4.2*PX+6); ctx.globalAlpha=1;
+  }
+}
+
+function drawProjectiles(){
+  for(const p of projectiles){
+    const u=p.t/p.dur;
+    const x=p.sx+(p.ex-p.sx)*u;
+    const y=p.sy+(p.ey-p.sy)*u - Math.sin(u*Math.PI)*p.arc;  // parabolic arc
+    const ang=Math.atan2((p.ey-p.sy) - Math.cos(u*Math.PI)*p.arc*Math.PI, (p.ex-p.sx));
+    ctx.save(); ctx.translate(x,y); ctx.rotate(ang);
+    if(p.move.kind==='bow'){
+      // arrow: shaft + head + fletching, with motion trail
+      ctx.strokeStyle='rgba(230,210,150,0.4)'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(-26,0); ctx.lineTo(0,0); ctx.stroke();
+      ctx.strokeStyle='#caa15a'; ctx.lineWidth=2.5;
+      ctx.beginPath(); ctx.moveTo(-14,0); ctx.lineTo(8,0); ctx.stroke();
+      ctx.fillStyle='#e8d9a0'; ctx.beginPath();
+      ctx.moveTo(8,0); ctx.lineTo(2,-3); ctx.lineTo(2,3); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle='#caa15a'; ctx.beginPath(); ctx.moveTo(-14,0); ctx.lineTo(-18,-3);
+      ctx.moveTo(-14,0); ctx.lineTo(-18,3); ctx.stroke();
+    } else {
+      // magic orb with school glow + element glyph trail
+      const sc=SCHOOL[p.school];
+      const gg=ctx.createRadialGradient(0,0,1,0,0,16);
+      gg.addColorStop(0,sc.col2); gg.addColorStop(0.5,sc.col); gg.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(0,0,16,0,7); ctx.fill();
+      ctx.fillStyle=sc.col2; ctx.beginPath(); ctx.arc(0,0,4,0,7); ctx.fill();
+      // trailing particles
+      if(rnd()<0.8) particles.push({ x, y, vx:(rnd()-.5)*40, vy:(rnd()-.5)*40,
+        life:0.3, col:sc.col, sz:2+rnd()*2, grav:p.school==='fire'?-120:60, drag:0.1 });
+      ctx.restore();
+      // glyph (drawn upright, not rotated)
+      ctx.font='12px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillStyle='#fff'; ctx.fillText(sc.glyph, x, y);
+      continue;
+    }
+    ctx.restore();
+  }
+}
+
+function drawSlashFX(rdt){
+  for(let i=slashFX.length-1;i>=0;i--){
+    const sFx=slashFX[i]; sFx.t+=rdt;
+    const u=sFx.t/sFx.life; if(u>=1){ slashFX.splice(i,1); continue; }
+    ctx.save(); ctx.translate(sFx.x, sFx.y);
+    ctx.globalAlpha=(1-u)*0.95; ctx.strokeStyle='#eaf0ff'; ctx.lineWidth=6-u*4;
+    ctx.beginPath();
+    const a0=(-1.1)*sFx.dir, a1=(1.1)*sFx.dir;
+    ctx.arc(0,0, 30, a0+u*0.6, a1+u*0.6, sFx.dir<0); ctx.stroke();
+    // steel inner flash
+    ctx.globalAlpha=(1-u)*0.6; ctx.strokeStyle='#9fb6e0'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(0,0,30,a0+u*0.6,a1+u*0.6, sFx.dir<0); ctx.stroke();
+    ctx.restore(); ctx.globalAlpha=1;
+  }
+}
+
+function drawParticles(){
+  for(const p of particles){
+    ctx.globalAlpha=Math.min(1, p.life*3);
+    ctx.fillStyle=p.col;
+    ctx.fillRect(p.x-p.sz/2, p.y-p.sz/2, p.sz, p.sz);
+  }
+  ctx.globalAlpha=1;
+  for(const d of debris){
+    ctx.globalAlpha=Math.min(1,d.life*2); ctx.fillStyle=d.c;
+    const s=d.sz||PX*0.8; ctx.fillRect(d.x-s/2, d.y-s/2, s, s);
+  }
+  ctx.globalAlpha=1;
+}
+
+// --- screen-space UI (HP bars, floaters, log) drawn WITHOUT camera transform ---
+function drawHPBar(f){
+  const s=depthScale(f);
+  const sx=creatureScreenX(f)*zoom + (1-zoom)*W/2 + camX;
+  const top=(ground-lift_(f)-3.4*PX-46)*zoom + (1-zoom)*H/2 + camY;
+  const bw=120, bh=11, x=sx-bw/2, y=top;
+  // name
+  ctx.font='bold 13px system-ui'; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle = f.enemyTint?'#d8a8f0':'#add0ff';
+  ctx.fillText(f.name, x, y-6);
+  // frame
+  ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(x-2,y-2,bw+4,bh+4);
+  // chip (delayed white trail)
+  ctx.fillStyle='rgba(255,255,255,0.6)';
+  ctx.fillRect(x, y, bw*Math.max(0,f.hpChip)/f.maxHP, bh);
+  // hp fill
+  const frac=Math.max(0,f.hpShown)/f.maxHP;
+  const col = frac>0.5?'#56d364':frac>0.25?'#e3b341':'#e5534b';
+  ctx.fillStyle=col; ctx.fillRect(x, y, bw*frac, bh);
+  // hp text
+  ctx.font='9px system-ui'; ctx.fillStyle='#0a0d12';
+  ctx.fillText(Math.ceil(Math.max(0,f.hpShown))+'', x+4, y+9);
+  // status icon row (countdown shrink)
+  let ix=x;
+  for(const st of f.statuses){
+    const def=STATUS_DEF[st.key];
+    const k=Math.max(0.2, st.dur/def.dur);
+    ctx.fillStyle=def.col; ctx.globalAlpha=0.85;
+    const sz=14*k+4;
+    ctx.fillRect(ix, y+bh+3, sz, sz);
+    ctx.globalAlpha=1; ctx.font=(sz*0.8|0)+'px system-ui'; ctx.fillStyle='#fff';
+    ctx.textAlign='center'; ctx.fillText(def.glyph, ix+sz/2, y+bh+3+sz*0.78);
+    ctx.textAlign='left';
+    ix += 22;
+  }
+}
+function lift_(f){ return (1-depthScale(f))*120; }
+
+let camX=0, camY=0;
+function drawFloaters(){
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(const fl of floaters){
+    const a=Math.min(1, (fl.life-fl.t)*3);
+    const x=fl.x*zoom + (1-zoom)*W/2 + camX;
+    const y=fl.y*zoom + (1-zoom)*H/2 + camY;
+    const pop=1+fl.pop*0.8;
+    const size=(fl.big?30:18)*pop;
+    ctx.globalAlpha=a;
+    ctx.font=`bold ${size}px system-ui`;
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.7)';
+    ctx.strokeText(fl.text, x, y);
+    ctx.fillStyle=fl.col; ctx.fillText(fl.text, x, y);
+  }
+  ctx.globalAlpha=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+}
+
+function drawLog(){
+  const w=330, x=W-w-14, lh=20, n=log.length, y0=H-14-n*lh;
+  ctx.fillStyle='rgba(8,12,20,0.55)';
+  ctx.fillRect(x-8, y0-22, w+8, n*lh+28);
+  ctx.fillStyle='rgba(160,180,210,0.5)';
+  ctx.font='bold 11px system-ui'; ctx.textAlign='left';
+  ctx.fillText('БОЙОВИЙ ЛОГ', x, y0-8);
+  ctx.font='13px system-ui';
+  for(let i=0;i<n;i++){
+    const e=log[i]; const fade=0.4+0.6*((i+1)/n);
+    ctx.globalAlpha=fade; ctx.fillStyle=e.col;
+    ctx.fillText(e.text, x, y0+i*lh+8);
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawATB(){
+  // small ATB pips under the HUD area
+  for(const f of fighters){
+    if(!f.alive) continue;
+    const sx=creatureScreenX(f)*zoom+(1-zoom)*W/2+camX;
+    const top=(ground-lift_(f)-3.4*PX-46)*zoom+(1-zoom)*H/2+camY;
+    const bw=120, x=sx-bw/2, y=top+16;
+    ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(x,y,bw,4);
+    ctx.fillStyle='#7fc8ff'; ctx.fillRect(x,y,bw*f.atb,4);
+  }
+}
+
+function drawBanner(){
+  if(phase!=='ko') return;
+  ctx.save();
+  ctx.globalAlpha=0.85;
+  ctx.fillStyle='rgba(0,0,0,0.45)'; ctx.fillRect(0,H*0.32,W,H*0.22);
+  ctx.textAlign='center';
+  ctx.font='bold 64px system-ui';
+  ctx.fillStyle='#ffe24a'; ctx.fillText('K.O.', W/2, H*0.43);
+  ctx.font='bold 26px system-ui'; ctx.fillStyle='#fff';
+  ctx.fillText(`${winner.name} переміг!`, W/2, H*0.49);
+  ctx.restore(); ctx.textAlign='left';
+}
+
+function drawVignetteAndLight(){
+  // magic/explosion radial light flash tinting the scene
+  if(lightFlash>0){
+    ctx.globalAlpha=lightFlash*0.5;
+    const g=ctx.createRadialGradient(W/2,ground-100,40,W/2,H/2,W*0.7);
+    g.addColorStop(0,lightCol); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H); ctx.globalAlpha=1;
+  }
+  // vignette
+  const v=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.35,W/2,H/2,Math.max(W,H)*0.72);
+  v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,0,0,0.55)');
+  ctx.fillStyle=v; ctx.fillRect(0,0,W,H);
+}
+
+/* ============================================================================
+   8. MAIN LOOP
+   ========================================================================== */
+buildFighters();
+pushLog('— Бій #1 —', '#9fb0c8');
+pushLog('Hero проти Enemy', '#9fb0c8');
+
+function frame(ts){
+  const rawDt = Math.min(0.05, (frame._p?ts-frame._p:16)/1000); frame._p=ts;
+  t += rawDt;
+
+  cameraStep(rawDt);
+  // apply time dilation (slow-mo). hit-stop freezes sim but not camera.
+  let simDt = rawDt * timeScale;
+  if(hitstop>0){ hitstop -= rawDt; simDt = 0; }
+
+  // ---- SIM (deterministic) ----
+  if(simDt>0){
+    stepDelayed(simDt);
+    simStep(simDt);
+  }
+  consumeEvents();
+  // ---- RENDER physics ----
+  // During hit-stop everything freezes; otherwise springs/particles run on simDt
+  // so slow-mo also slows the soft-body and VFX for a cohesive feel.
+  physStep(hitstop>0 ? 0 : simDt);
+
+  // ---- DRAW ----
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  // world transform: zoom around center + screenshake
+  const shx=(rnd()-.5)*shake, shy=(rnd()-.5)*shake;
+  camX=shx; camY=shy;
+  drawArena();  // arena drawn in screen space (full bleed), before zoom for stable backdrop
+
+  ctx.save();
+  ctx.translate(W/2+shx, H/2+shy);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-W/2, -H/2);
+
+  // shadows first
+  for(const f of fighters) drawShadow(f);
+  // depth-sorted creatures (far -> near)
+  const order=[...fighters].sort((a,b)=>depthScale(a)-depthScale(b));
+  for(const f of order) drawCreature(f);
+  drawProjectiles();
+  drawSlashFX(rawDt);
+  drawParticles();
+  ctx.restore();
+
+  // lighting + vignette over the world
+  drawVignetteAndLight();
+
+  // UI in screen space (compensates for zoom internally)
+  for(const f of fighters){ if(f.alive) drawHPBar(f); }
+  drawATB();
+  drawFloaters();
+  drawLog();
+  drawBanner();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
