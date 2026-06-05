@@ -1,11 +1,13 @@
 /**
  * builder-view.ts — verbatim TS port of poc/builder.html builder mode.
- * Exports startBuilder({ onFight }) which mounts a full-screen Canvas2D builder.
+ * Exports startBuilder({ state, onFight, rewardEvents }) which mounts a full-screen Canvas2D builder.
  * All derive logic delegated to src/derive (no detection re-implemented here).
  */
 
 import { deriveStats, deriveMoveset, CUBES, PRESETS } from '../index';
 import type { Build, PlacedCube, Trait, Stats } from '../index';
+import type { SaveState, RewardEvent } from '../game/meta';
+import { xpToNext, grantLootInto } from '../game/meta';
 import { detectTraits } from '../derive/detectors';
 import { SYNERGY_DEFS } from '../data/traits';
 import { MOVES, MOVE_IDS } from '../data/moves';
@@ -78,16 +80,6 @@ function mulberry32(a: number): () => number {
 }
 function lootRng(n: number): () => number {
   return mulberry32(SEED_BASE * 7 + n * 2654435761);
-}
-function weightedCubePick(r: () => number): string {
-  let total = 0;
-  for (const k in RARITY_WEIGHT) total += RARITY_WEIGHT[k]!;
-  let roll = r() * total;
-  let rar = 'common';
-  for (const k in RARITY_WEIGHT) { roll -= RARITY_WEIGHT[k]!; if (roll <= 0) { rar = k; break; } }
-  const pool = PLACEABLE.filter(k => (CUBES[k]?.rarity ?? 'common') === rar);
-  if (pool.length === 0) return PLACEABLE[(r() * PLACEABLE.length) | 0]!;
-  return pool[(r() * pool.length) | 0]!;
 }
 
 // ---------------------------------------------------------------------------
@@ -479,7 +471,7 @@ function drawCreaturePixels(
 // ---------------------------------------------------------------------------
 // MAIN startBuilder()
 // ---------------------------------------------------------------------------
-export function startBuilder(opts: { onFight: (build: Build) => void }): () => void {
+export function startBuilder(opts: { state: SaveState; onFight: (build: Build) => void; rewardEvents?: RewardEvent[] }): () => void {
 
   // ---- canvas setup (verbatim DPR logic from poc lines 757-769) ----
   const cv = document.createElement('canvas');
@@ -500,66 +492,64 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
   }
   window.addEventListener('resize', resize); resize();
 
-  // ---- META-STATE (verbatim from poc lines 1638-1716) ----
-  const META = {
-    level: 1,
-    budgetCap: BUDGET_BASE,
-    ringUnlocked: GRID_START_RING,
-    inventory: {} as Record<string, number>,
-    lootClicks: 0,
-    discovered: {} as Record<string, boolean>,
-  };
-  for (const k of TYPE_ORDER) { if (k !== 'core') META.inventory[k] = 0; }
+  // ---- META-STATE — read/write from opts.state (shared SaveState) ----
+  // Local ring/grid state derived from level (not stored in SaveState — cosmetic only)
+  let ringUnlocked = GRID_START_RING + Math.floor((opts.state.level - 1) / RING_UNLOCK_EVERY);
+  {
+    const half = GRID_MAX >> 1;
+    if (ringUnlocked > half) ringUnlocked = half;
+  }
+  const discovered: Record<string, boolean> = {};
 
-  function owned(type: string): number { return type === 'core' ? Infinity : (META.inventory[type] ?? 0); }
+  function owned(type: string): number { return type === 'core' ? Infinity : (opts.state.inventory[type] ?? 0); }
   function buildCost(arr: Build): number { let s = 0; for (const p of arr) s += (CUBES[p.type]?.cost ?? 0); return s; }
   function budgetUsed(): number { return buildCost(build); }
-  function budgetCap(): number { return META.budgetCap; }
+  function budgetCap(): number { return BUDGET_BASE + (opts.state.level - 1) * BUDGET_PER_LEVEL; }
   function cellUnlocked(gx: number, gy: number): boolean {
     const half = GRID_MAX >> 1;
     if (Math.abs(gx) > half || Math.abs(gy) > half) return false;
-    return Math.max(Math.abs(gx), Math.abs(gy)) <= META.ringUnlocked;
+    return Math.max(Math.abs(gx), Math.abs(gy)) <= ringUnlocked;
   }
 
-  function grantLoot(batchRange: [number, number]): void {
-    META.lootClicks++;
-    const r = lootRng(META.lootClicks);
+  // Internal loot counter for deterministic loot seeding within this builder session
+  let _lootClicks = 0;
+  function grantLootToState(batchRange: [number, number]): void {
+    _lootClicks++;
+    const r = lootRng(_lootClicks);
     const n = batchRange[0] + ((r() * (batchRange[1] - batchRange[0] + 1)) | 0);
     const got: Record<string, number> = {};
-    for (let i = 0; i < n; i++) {
-      const k = weightedCubePick(r);
-      META.inventory[k] = (META.inventory[k] ?? 0) + 1;
-      got[k] = (got[k] ?? 0) + 1;
-    }
+    const granted = grantLootInto(opts.state.inventory, n, r);
+    for (const k of granted) got[k] = (got[k] ?? 0) + 1;
     const parts = Object.keys(got).map(k => (CUBES[k]?.name ?? k) + '×' + got[k]);
     toast('Лут: ' + parts.join(', '), '#5ec07e');
   }
 
   function expandGrid(): void {
     const half = GRID_MAX >> 1;
-    if (META.ringUnlocked >= half) { toast('Поле вже максимальне', '#e3b341'); return; }
-    META.ringUnlocked++;
-    toast('Поле розширено до ' + (META.ringUnlocked * 2 + 1) + '×' + (META.ringUnlocked * 2 + 1), '#7ea0d0');
+    if (ringUnlocked >= half) { toast('Поле вже максимальне', '#e3b341'); return; }
+    ringUnlocked++;
+    toast('Поле розширено до ' + (ringUnlocked * 2 + 1) + '×' + (ringUnlocked * 2 + 1), '#7ea0d0');
   }
 
-  function levelUp(): void {
-    META.level++;
-    META.budgetCap += BUDGET_PER_LEVEL;
-    let msg = 'Рівень ' + META.level + ' · бюджет +' + BUDGET_PER_LEVEL;
-    if (META.level % RING_UNLOCK_EVERY === 0) {
+  // levelUp and grantLoot kept as internal helpers (used by old code paths — no free UI buttons)
+  function levelUpInternal(): void {
+    opts.state.level++;
+    let msg = 'Рівень ' + opts.state.level + ' · бюджет +' + BUDGET_PER_LEVEL;
+    if (opts.state.level % RING_UNLOCK_EVERY === 0) {
       const half = GRID_MAX >> 1;
-      if (META.ringUnlocked < half) { META.ringUnlocked++; msg += ' · поле розширено'; }
+      if (ringUnlocked < half) { ringUnlocked++; msg += ' · поле розширено'; }
     }
-    grantLoot(LOOT_LEVEL_BATCH);
+    grantLootToState(LOOT_LEVEL_BATCH);
     toast(msg, '#b07ed0');
   }
+  void levelUpInternal; // suppress unused-warning (kept for internal use)
 
   function markDiscovered(traits: Trait[]): void {
-    for (const tr of traits) { if (!META.discovered[tr.key]) META.discovered[tr.key] = true; }
+    for (const tr of traits) { if (!discovered[tr.key]) discovered[tr.key] = true; }
   }
 
-  // ---- BUILDER STATE ----
-  let build: Build = [{ gx: 0, gy: 0, type: 'core' }];
+  // ---- BUILDER STATE — initialize from shared state ----
+  let build: Build = opts.state.heroBuild.map(p => ({ ...p }));
   let selectedType = 'vital';
   let showAllBonds = false;
   let builderZoom = 1.0;
@@ -671,7 +661,7 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
     const res = canPlace(gx, gy, selectedType);
     if (!res.ok) { toast('Не можна: ' + res.reason, '#e5814b'); return; }
     build.push({ gx, gy, type: selectedType });
-    META.inventory[selectedType] = (META.inventory[selectedType] ?? 1) - 1;
+    opts.state.inventory[selectedType] = (opts.state.inventory[selectedType] ?? 1) - 1;
     recompute();
   }
   function removePixel(idx: number): void {
@@ -681,7 +671,7 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
     const reach = connectedSet(trial);
     if (reach.size !== trial.length) { toast('Прибирання відʼєднає тіло', '#e5814b'); return; }
     build.splice(idx, 1);
-    META.inventory[p.type] = (META.inventory[p.type] ?? 0) + 1;
+    opts.state.inventory[p.type] = (opts.state.inventory[p.type] ?? 0) + 1;
     recompute();
   }
   function loadPreset(key: string): void {
@@ -691,12 +681,10 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
     build = pb;
     const need: Record<string, number> = {};
     for (const p of pb) { if (p.type !== 'core') need[p.type] = (need[p.type] ?? 0) + 1; }
-    for (const k in need) { if ((META.inventory[k] ?? 0) < 0) META.inventory[k] = 0; }
-    const cost = buildCost(pb);
-    if (cost > META.budgetCap) META.budgetCap = cost;
+    for (const k in need) { if ((opts.state.inventory[k] ?? 0) < 0) opts.state.inventory[k] = 0; }
     prevShapeKeys = new Set();
     recompute();
-    toast('Пресет «' + (preset.name) + '» (демо: бюджет підлаштовано)', '#9fb4d6');
+    toast('Пресет «' + (preset.name) + '» (демо)', '#9fb4d6');
   }
 
   // ---- BOND SEGMENTS (verbatim from poc lines 1835-1846) ----
@@ -881,7 +869,7 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
 
     // unlocked-region border
     {
-      const r = META.ringUnlocked;
+      const r = ringUnlocked;
       const a = gridToScreen(-r, -r), b2 = gridToScreen(r, r);
       ctx.strokeStyle = 'rgba(120,160,210,0.4)'; ctx.lineWidth = 2;
       ctx.strokeRect(a.x - cell / 2, a.y - cell / 2, (2 * r + 1) * cell, (2 * r + 1) * cell);
@@ -1110,26 +1098,46 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
     }
   }
 
-  // ---- DRAW PROGRESS HUD (verbatim from poc lines 2230-2251) ----
+  // ---- DRAW PROGRESS HUD — level / XP / Essence / budget readout ----
   function drawProgressHUD(): void {
-    const x = 16, y = 14, w = 320, h = 44;
+    const x = 16, y = 14, w = 340, h = 70;
     ctx.fillStyle = 'rgba(8,12,20,0.7)'; ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = 'rgba(90,120,170,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
     ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+
+    // Row 1: Level + Essence + field
+    const lvl = opts.state.level;
     ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#cfe0ff';
-    ctx.fillText('Рівень ' + META.level, x + 10, y + 18);
-    ctx.font = '11px system-ui'; ctx.fillStyle = '#9fb4d6';
-    ctx.fillText('Поле ' + (META.ringUnlocked * 2 + 1) + '×' + (META.ringUnlocked * 2 + 1) + ' / макс ' + GRID_MAX + '×' + GRID_MAX, x + 96, y + 18);
+    ctx.fillText('Рівень ' + lvl, x + 10, y + 16);
+    ctx.font = '11px system-ui'; ctx.fillStyle = '#a0c8ff';
+    ctx.fillText('Essence: ' + opts.state.essence, x + 92, y + 16);
+    ctx.fillStyle = '#9fb4d6';
+    ctx.fillText('Поле ' + (ringUnlocked * 2 + 1) + '×' + (ringUnlocked * 2 + 1), x + 196, y + 16);
+
+    // Row 2: XP bar
+    const xpCur = opts.state.xp;
+    const xpMax = xpToNext(lvl);
+    const bx = x + 10, by2 = y + 22, bw = w - 20, bh = 10;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by2, bw, bh);
+    const xpFrac = xpMax > 0 ? Math.min(1, xpCur / xpMax) : 0;
+    ctx.fillStyle = '#9060d0';
+    ctx.fillRect(bx, by2, bw * xpFrac, bh);
+    ctx.strokeStyle = 'rgba(120,100,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(bx, by2, bw, bh);
+    ctx.font = 'bold 9px system-ui'; ctx.fillStyle = '#d0b8ff'; ctx.textAlign = 'center';
+    ctx.fillText('XP: ' + xpCur + ' / ' + xpMax, bx + bw / 2, by2 + 9);
+    ctx.textAlign = 'left';
+
+    // Row 3: Budget bar
     const used = budgetUsed(), cap = budgetCap();
-    const bx = x + 10, by = y + 26, bw = w - 20, bh = 12;
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by, bw, bh);
+    const bx2 = x + 10, by3 = y + 38, bh2 = 12;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx2, by3, bw, bh2);
     const frac = cap > 0 ? Math.min(1, used / cap) : 0;
     const full = used >= cap;
     ctx.fillStyle = full ? '#e5534b' : (frac > 0.8 ? '#e3b341' : '#56b0e3');
-    ctx.fillRect(bx, by, bw * frac, bh);
-    ctx.strokeStyle = 'rgba(120,150,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(bx, by, bw, bh);
+    ctx.fillRect(bx2, by3, bw * frac, bh2);
+    ctx.strokeStyle = 'rgba(120,150,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(bx2, by3, bw, bh2);
     ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#eaf0fb'; ctx.textAlign = 'center';
-    ctx.fillText('Бюджет: ' + used + ' / ' + cap + '◆', bx + bw / 2, by + 10);
+    ctx.fillText('Бюджет: ' + used + ' / ' + cap + '◆', bx2 + bw / 2, by3 + 10);
     ctx.textAlign = 'left';
   }
 
@@ -1263,7 +1271,7 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
     ctx.font = 'bold 16px system-ui'; ctx.fillStyle = '#cfe0ff'; ctx.textAlign = 'left';
     ctx.fillText('КОДЕКС КОМБІНАЦІЙ', x + 18, y + 28);
     ctx.font = '11px system-ui'; ctx.fillStyle = '#7e90ac';
-    ctx.fillText('відкрито: ' + Object.keys(META.discovered).length + ' / ' + (SYNERGY_DEFS.length + 4) + '    (клік «Кодекс» щоб закрити)', x + 18, y + 44);
+    ctx.fillText('відкрито: ' + Object.keys(discovered).length + ' / ' + (SYNERGY_DEFS.length + 4) + '    (клік «Кодекс» щоб закрити)', x + 18, y + 44);
 
     // We need shape defs count — 4 shapes (spike/bastion/heart/balance). Use imported data.
     const grps: Array<{ hd: string; list: Array<{ key: string; name: string; icon: string; effect: string }> }> = [
@@ -1287,7 +1295,7 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
     for (const grp of grps) {
       ctx.font = 'bold 12px system-ui'; ctx.fillStyle = '#9fb4d6'; ctx.fillText(grp.hd, x + 18, ry + 12); ry += 22;
       for (const d of grp.list) {
-        const disc = !!META.discovered[d.key];
+        const disc = !!discovered[d.key];
         const col = traitColor(d.icon) || traitColor(d.key);
         ctx.globalAlpha = disc ? 1 : 0.42;
         ctx.fillStyle = 'rgba(16,22,36,0.9)'; ctx.fillRect(x + 18, ry, cw - 36, 36);
@@ -1448,6 +1456,7 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
   }
 
   // ---- ACTION BUTTONS (HTML overlay) ----
+  // Note: "+Рівень" and "Відкрити лут" removed — level/loot come only from fights now.
   let uiDiv: HTMLDivElement | null = null;
   function createActionButtons(): void {
     const ui = document.createElement('div');
@@ -1465,22 +1474,18 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
       return btn;
     }
 
-    const btnLoot   = makeBtn('Відкрити лут', 'background:#14241a;border-color:#3a7e52', 'отримати випадкові куби');
     const btnExpand = makeBtn('Розширити поле', 'background:#1a2230;border-color:#52708e', 'розширити поле');
-    const btnLevel  = makeBtn('+ Рівень', 'background:#241a2e;border-color:#7e52a0', 'підвищити рівень (демо)');
     const btnAll    = makeBtn('всі звʼязки: ВИМК', '', 'показати всі звʼязки');
     const btnCodex  = makeBtn('Кодекс', '', 'кодекс комбінацій');
 
-    btnLoot.addEventListener('click',   () => grantLoot(LOOT_BATCH));
     btnExpand.addEventListener('click', () => expandGrid());
-    btnLevel.addEventListener('click',  () => levelUp());
     btnAll.addEventListener('click', () => {
       showAllBonds = !showAllBonds;
       btnAll.textContent = 'всі звʼязки: ' + (showAllBonds ? 'УВІМК' : 'ВИМК');
     });
     btnCodex.addEventListener('click', () => { showCodex = !showCodex; });
 
-    ui.appendChild(btnLoot); ui.appendChild(btnExpand); ui.appendChild(btnLevel);
+    ui.appendChild(btnExpand);
     ui.appendChild(btnAll); ui.appendChild(btnCodex);
     document.body.appendChild(ui);
   }
@@ -1534,7 +1539,6 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
     if (e.key === '[') { builderZoom = Math.max(0.5, builderZoom - 0.1); }
     if (e.key === ']') { builderZoom = Math.min(2.0, builderZoom + 0.1); }
     if (e.key === 'b' || e.key === 'B') { showAllBonds = !showAllBonds; }
-    if (e.key === 'l' || e.key === 'L') { grantLoot(LOOT_BATCH); }
     if (e.key === 'c' || e.key === 'C') { showCodex = !showCodex; }
   }
   function onCanvasClick(e: MouseEvent): void {
@@ -1600,9 +1604,18 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): () => v
   // ---- BOOT ----
   createActionButtons();
   setupInput();
-  // grant initial loot so inventory isn't empty
-  grantLoot([8, 8]); grantLoot([8, 8]);
   recompute();
+  // Show reward toast if returning from a fight
+  if (opts.rewardEvents && opts.rewardEvents.length > 0) {
+    const parts: string[] = [];
+    for (const ev of opts.rewardEvents) {
+      if (ev.kind === 'levelUp') parts.unshift('Рівень ' + ev.level + '!');
+      else if (ev.kind === 'xp') parts.push('+' + ev.n + ' XP');
+      else if (ev.kind === 'essence') parts.push('+' + ev.n + ' Essence');
+      else if (ev.kind === 'loot') parts.push('Лут: ' + ev.cubes.map(k => CUBES[k]?.name ?? k).join(', '));
+    }
+    if (parts.length > 0) toast(parts.join(' · '), '#b07ed0');
+  }
   rafId = requestAnimationFrame(frame);
 
   // ---- DISPOSER ----

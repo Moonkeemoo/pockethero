@@ -77,7 +77,7 @@ let _prevStop: (() => void) | null = null;
 /* ============================================================================
    PUBLIC ENTRY POINT
    ========================================================================== */
-export function startGauntlet(opts?: { heroBuild?: Build; onExit?: () => void }): () => void {
+export function startGauntlet(opts?: { heroBuild?: Build; onExit?: (result: { won: boolean; stagesCleared: number }) => void }): () => void {
 
 // Teardown any previous run
 if (_prevStop) { _prevStop(); _prevStop = null; }
@@ -1079,6 +1079,8 @@ function drawVignetteAndLight(): void {
    ========================================================================== */
 let loopCount = 0;
 let stageIdx  = 0;
+let stagesCleared = 0;   // hero wins this session
+let lastHeroWon = false; // outcome of most recent completed fight
 let cardT = 0, resultT = 0;
 let resultText = '', resultWinnerColor = '#ffe24a';
 
@@ -1113,6 +1115,8 @@ function startFight(): void {
 function startResult(): void {
   phase='result'; resultT=RESULT_DUR;
   const heroWon = winner===hero;
+  lastHeroWon = heroWon;
+  if(heroWon) stagesCleared++;
   resultText = heroWon ? `${hero.name} переміг!` : `${enemy.name} переміг!`;
   resultWinnerColor = heroWon ? '#7fd0ff' : enemy.accent;
 }
@@ -1224,7 +1228,7 @@ function handleClick(ev: MouseEvent): void {
   const cx=ev.clientX, cy=ev.clientY;
   if(cx>=btnX && cx<=btnX+btnW && cy>=btnY && cy<=btnY+btnH) {
     stop();
-    opts.onExit();
+    opts.onExit({ won: lastHeroWon, stagesCleared });
   }
 }
 if(opts?.onExit) window.addEventListener('click', handleClick);
