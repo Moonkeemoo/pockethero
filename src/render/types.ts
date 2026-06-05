@@ -16,7 +16,6 @@ export type VfxIntent =
   | { kind: 'shake'; amp: number; ms: number }
   | { kind: 'hitstop'; frames: number }
   | { kind: 'debris'; target: string; count: number; color: number }
-  | { kind: 'flare'; actor: string; move: string }
   | { kind: 'floating'; target: string; text: string; color: number; crit: boolean }
   | { kind: 'heal'; target: string; amount: number }
   | { kind: 'ping'; target: string; label: 'block' | 'dodge' }

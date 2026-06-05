@@ -28,7 +28,7 @@ describe('mapEventToVfx', () => {
     expect(intents({ type: 'block', target: 'p2', t: 1 })).toEqual([{ kind: 'ping', target: 'p2', label: 'block' }]);
     expect(intents({ type: 'dodge', target: 'p2', t: 1 })).toEqual([{ kind: 'ping', target: 'p2', label: 'dodge' }]);
     expect(intents({ type: 'ko', target: 'p2', t: 1 })).toEqual([{ kind: 'ko', target: 'p2' }]);
-    expect(intents({ type: 'move-start', actor: 'p1', move: 'fireball', t: 1 })).toEqual([{ kind: 'flare', actor: 'p1', move: 'fireball' }]);
+    expect(intents({ type: 'move-start', actor: 'p1', move: 'fireball', t: 1 })).toEqual([]);
     const heal = intents({ type: 'heal', target: 'p1', amount: 5, t: 1 });
     expect(heal).toEqual([{ kind: 'heal', target: 'p1', amount: 5 }]);
   });

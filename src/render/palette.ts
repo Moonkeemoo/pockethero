@@ -13,7 +13,14 @@ export const mix = (a: number, b: number, t: number): number => {
   return (r << 16) | (g << 8) | bl;
 };
 export const lighten = (n: number, t: number): number => mix(n, 0xffffff, t);
-export const darken = (n: number, t: number): number => mix(n, 0x000000, t);
+export const darken  = (n: number, t: number): number => mix(n, 0x000000, t);
+export const desat   = (n: number, t: number): number => {
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const l = 0.3 * r + 0.59 * g + 0.11 * b;
+  return (Math.round(r + (l - r) * t) << 16)
+       | (Math.round(g + (l - g) * t) << 8)
+       |  Math.round(b + (l - b) * t);
+};
 
 export function rampFor(type: string): Ramp {
   const cube = CUBES[type];

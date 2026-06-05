@@ -24,7 +24,7 @@ export function mapEventToVfx(e: CombatEvent, theme: Theme): VfxIntent[] {
     case 'block':  return [{ kind: 'ping', target: e.target, label: 'block' }];
     case 'dodge':  return [{ kind: 'ping', target: e.target, label: 'dodge' }];
     case 'heal':   return [{ kind: 'heal', target: e.target, amount: e.amount }];
-    case 'move-start': return [{ kind: 'flare', actor: e.actor, move: e.move }];
+    case 'move-start': return [];
     case 'ko':     return [{ kind: 'ko', target: e.target }];
     case 'status-applied':
     case 'status-tick':

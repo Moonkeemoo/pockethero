@@ -54,9 +54,6 @@ export class Vfx {
         this.spawnFloat(p.x, p.y, i.label === 'block' ? 'BLOCK' : 'DODGE', 0x9fc0ff, false);
         break;
       }
-      case 'flare':
-        // causal flare is handled directly on the Creature in scene.ts
-        break;
       case 'ko':
         // KO just lets HP drain to zero; no extra particle (scene can pushLog)
         break;
@@ -83,6 +80,14 @@ export class Vfx {
     t.position.set(x, y);
     this.layer.addChild(t);
     this.floats.push({ t, life: 1, vy: -1.4 });
+  }
+
+  /** Destroy all transient particles and floating labels; reset shake/hitstop. */
+  clear(): void {
+    for (const p of this.parts) p.g.destroy();
+    this.parts = [];
+    for (const f of this.floats) f.t.destroy();
+    this.floats = [];
   }
 
   /** Advance all particles; returns shake offset to apply to the world container. */

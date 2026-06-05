@@ -77,6 +77,12 @@ export class Scene {
       this._started = true;
     }
 
+    // Reset transient state for clean restart
+    this.acc = 0;
+    this.vfx.hitstop = 0;
+    this.vfx.shake = 0;
+    this.vfx.clear();
+
     // reset HUD log on restart
     this.hud.pushLog(`— ${a.name} vs ${b.name} (seed ${seed.toString(16)}) —`);
     this.layout();
