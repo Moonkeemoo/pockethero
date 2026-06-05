@@ -242,11 +242,9 @@ export function openChest(
 
   state.coins -= CHEST_COST;
 
-  // Determine number of cubes: 1–3
+  // One cube per chest (director: limit money-bought drop to 1).
   const effectiveRng = rng ?? mulberry32(state.level * 9999 + state.coins);
-  const count = 1 + Math.floor(effectiveRng() * 3); // 1, 2, or 3
-
-  const granted = grantLootInto(state.inventory, count, effectiveRng);
+  const granted = grantLootInto(state.inventory, 1, effectiveRng);
   const events: RewardEvent[] = [{ kind: 'loot', cubes: granted }];
 
   return { ok: true, cubes: granted, events };
@@ -258,7 +256,7 @@ export function openChest(
 const SAVE_KEY = 'pockethero.save';
 // Bump when the save schema or the starter changes; older saves are reset to
 // defaultState so everyone gets the current starter hero + balance.
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 4;
 
 export function save(state: SaveState, storage?: StorageLike): void {
   const s: StorageLike | undefined = storage ?? (typeof globalThis !== 'undefined' && 'localStorage' in globalThis

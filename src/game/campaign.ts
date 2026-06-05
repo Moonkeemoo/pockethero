@@ -9,20 +9,20 @@ import type { Build } from '../index';
 // ---------------------------------------------------------------------------
 // Stage count per level
 // ---------------------------------------------------------------------------
-export function stageCount(level: number): number {
-  return level === 1 ? 5 : 10;
+// Every level is a 20-stage run (boss on the last stage).
+export function stageCount(_level: number): number {
+  return 20;
 }
+const STAGES = 20;
 
 // ---------------------------------------------------------------------------
 // Stage tier
 // ---------------------------------------------------------------------------
 export type Tier = 'minor' | 'elite' | 'boss';
 
-export function stageTier(level: number, stage: number): Tier {
-  const total = stageCount(level);
-  if (stage === total - 1) return 'boss';
-  if (level === 1 && stage === 2) return 'elite';
-  if (level !== 1 && (stage === 3 || stage === 6)) return 'elite';
+export function stageTier(_level: number, stage: number): Tier {
+  if (stage === STAGES - 1) return 'boss';            // stage 20 = boss
+  if (stage === 5 || stage === 10 || stage === 14) return 'elite'; // mid-run elite spikes
   return 'minor';
 }
 
@@ -46,12 +46,14 @@ function mulberry32(a: number): () => number {
   };
 }
 
-// Archetype → cube pool (valid CUBES keys only, no 'core')
+// Archetype → weighted cube pool. EVERY archetype guarantees an offense source
+// (force or magic) so that a bigger enemy is RELIABLY stronger (fixes the
+// "big tanky boss loses to 2 cubes" bug). Repeats = weight.
 const ARCHETYPE_CUBES: Record<string, string[]> = {
-  melee:  ['vital', 'plate', 'force'],
-  ranged: ['vital', 'swift', 'focus'],
-  mage:   ['vital', 'mana', 'ember', 'frost', 'catalyst'],
-  tank:   ['vital', 'plate', 'thorns'],
+  melee:  ['vital', 'vital', 'force', 'force', 'plate'],          // ~40% force
+  ranged: ['vital', 'swift', 'force', 'focus', 'force'],          // force + focus crit
+  mage:   ['vital', 'mana', 'ember', 'force', 'mana', 'frost'],   // magic dmg + a force
+  tank:   ['vital', 'vital', 'plate', 'force', 'thorns', 'force'],// armored but still hits
 };
 
 const ARCHETYPES = ['melee', 'ranged', 'mage', 'tank'] as const;
@@ -88,8 +90,12 @@ export function genEnemy(level: number, stage: number): EnemySpec {
   const archetype = ARCHETYPES[archetypeIndex] as Archetype;
   const pool = ARCHETYPE_CUBES[archetype]!;
 
-  // Gentle ramp so a tiny hero (grown from 1-2 cubes) can start, then must grow.
-  const rawTarget = 1 + (level - 1) * 4.5 + stage * 0.9;
+  // Wavy difficulty curve over a 20-stage level (director: lose first at ~stage 3,
+  // then rise in waves). base ramp + sine waviness, scaled by level + tier.
+  const ramp = 0.4 + stage * 0.72;               // starts trivial, ramps across the run
+  const wave = 1.4 * Math.sin(stage * 0.85);     // ±1.4 cube oscillation (the "waves")
+  const levelMul = 1 + (level - 1) * 0.6;        // each level meaningfully tougher
+  const rawTarget = (ramp + wave) * levelMul;
   const targetPixels = Math.max(1, Math.round(rawTarget * TIER_MUL[tier]));
 
   // Build a connected blob around [0,0]
@@ -142,14 +148,18 @@ export function stageReward(
   const tier = stageTier(level, stage);
   const tierMul = tier === 'boss' ? 4 : tier === 'elite' ? 2 : 1;
 
-  const baseXp = 15 + level * 5 + stage * 3;
-  const baseCoins = 8 + level * 3 + stage * 2;
+  const baseXp = 12 + level * 4 + stage * 2;
+  const baseCoins = 6 + level * 3 + stage * 1.5;
 
   const xp = Math.round(baseXp * tierMul);
   const coins = Math.round(baseCoins * tierMul);
 
-  // Onboarding cube schedule: Level 1 only, one per stage
-  const L1_CUBES = ['force', 'plate', 'swift', 'focus', 'ember'] as const;
+  // Onboarding cube schedule: Level 1, a guaranteed cube on the first ~10 stages
+  // so the player earns variety + growth material while learning to push past stage 3.
+  const L1_CUBES = [
+    'force', 'vital', 'plate', 'force', 'swift',
+    'focus', 'vital', 'force', 'plate', 'ember',
+  ] as const;
   let cube: string | undefined;
   if (level === 1 && stage < L1_CUBES.length) {
     cube = L1_CUBES[stage];
