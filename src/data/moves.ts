@@ -1,0 +1,122 @@
+import type { Move } from './types';
+
+/**
+ * Move registry ported verbatim from poc/builder.html MOVES.
+ * POC field `type` (damage school: 'phys'|'magic') is renamed to `school`.
+ * POC field `school` (spell element: 'fire'|'frost'|'spark'|'poison'|'arcane')
+ *   is stored as `magicSchool` to avoid collision.
+ * `req` functions are omitted here — the resolver (Task 5) will re-derive them
+ *   from cube counts at runtime.
+ * `id` == the registry key.
+ */
+export const MOVES: Record<string, Move> = {
+  fist: {
+    id: 'fist',
+    kind: 'fist',
+    icon: '👊',
+    label: "б'є кулаком",
+    windUp: 0.10,
+    recover: 0.18,
+    power: 9,
+    school: 'phys',
+    ranged: false,
+    double: true,
+    weight: 3.0,
+  },
+  sword: {
+    id: 'sword',
+    kind: 'sword',
+    icon: '⚔️',
+    label: "б'є мечем",
+    windUp: 0.28,
+    recover: 0.34,
+    power: 20,
+    school: 'phys',
+    ranged: false,
+    critBonus: 0.22,
+    weight: 2.0,
+  },
+  bow: {
+    id: 'bow',
+    kind: 'bow',
+    icon: '🏹',
+    label: 'стріляє з лука',
+    windUp: 0.22,
+    recover: 0.26,
+    power: 15,
+    school: 'phys',
+    ranged: true,
+    weight: 1.6,
+  },
+  fire: {
+    id: 'fire',
+    kind: 'fire',
+    icon: '🔥',
+    label: 'кастує Вогняну кулю',
+    windUp: 0.40,
+    recover: 0.36,
+    power: 18,
+    school: 'magic',
+    ranged: true,
+    magicSchool: 'fire',
+    status: 'burn',
+    weight: 1.3,
+  },
+  frost: {
+    id: 'frost',
+    kind: 'frost',
+    icon: '❄️',
+    label: 'кастує Крижану стрілу',
+    windUp: 0.40,
+    recover: 0.36,
+    power: 14,
+    school: 'magic',
+    ranged: true,
+    magicSchool: 'frost',
+    status: 'slow',
+    weight: 1.3,
+  },
+  spark: {
+    id: 'spark',
+    kind: 'spark',
+    icon: '⚡',
+    label: "б'є Розрядом",
+    windUp: 0.34,
+    recover: 0.34,
+    power: 16,
+    school: 'magic',
+    ranged: true,
+    magicSchool: 'spark',
+    status: 'shock',
+    weight: 1.2,
+  },
+  venom: {
+    id: 'venom',
+    kind: 'venom',
+    icon: '☣️',
+    label: 'кидає Отруту',
+    windUp: 0.32,
+    recover: 0.32,
+    power: 11,
+    school: 'magic',
+    ranged: true,
+    magicSchool: 'poison',
+    status: 'poison',
+    weight: 1.1,
+  },
+  arc: {
+    id: 'arc',
+    kind: 'arc',
+    icon: '✦',
+    label: 'вивільняє Аркану',
+    windUp: 0.46,
+    recover: 0.40,
+    power: 30,
+    school: 'magic',
+    ranged: true,
+    magicSchool: 'arcane',
+    weight: 1.0,
+  },
+};
+
+export const MOVE_IDS = Object.keys(MOVES) as Array<keyof typeof MOVES>;

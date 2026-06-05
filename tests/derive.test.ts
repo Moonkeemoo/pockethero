@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CUBES, CUBE_IDS } from '../src/data/cubes';
+import { MOVES, MOVE_IDS } from '../src/data/moves';
+import { SYNERGY_DEFS, SHAPE_DEFS } from '../src/data/traits';
 
 describe('cube registry', () => {
   it('has the full roster with valid fields', () => {
@@ -15,5 +17,21 @@ describe('cube registry', () => {
   });
   it('includes the special core cube', () => {
     expect(CUBES['core']).toBeDefined();
+  });
+});
+
+describe('moves & traits registries', () => {
+  it('moves have a school and positive weight', () => {
+    expect(MOVE_IDS.length).toBeGreaterThan(0);
+    for (const id of MOVE_IDS) {
+      const m = MOVES[id]!;
+      expect(m.weight).toBeGreaterThan(0);
+      expect(m.school.length).toBeGreaterThan(0);
+    }
+  });
+  it('trait defs have unique keys', () => {
+    const keys = [...SYNERGY_DEFS, ...SHAPE_DEFS].map((d) => d.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.length).toBeGreaterThanOrEqual(8);
   });
 });

@@ -15,13 +15,43 @@ export interface Cube {
 
 export interface Move {
   id: string;
-  name: string;        // UA
-  weight: number;      // pick weight
-  school: string;      // schools.ts key
-  power?: number;
-  reach?: number;
-  status?: string;     // status id this move can apply
+  kind: string;        // original POC `kind` field (same as id)
+  icon: string;        // emoji icon
+  label: string;       // UA display label
+  windUp: number;      // animation wind-up duration (seconds)
+  recover: number;     // animation recover duration (seconds)
+  power: number;       // base damage power
+  school: string;      // damage school ('phys' | 'magic'); renamed from POC `type`
+  ranged: boolean;     // whether the move is ranged
+  weight: number;      // pick weight for move selection
+  // optional fields present on some moves
+  double?: boolean;    // fist: attacks twice
+  critBonus?: number;  // sword: extra crit chance
+  status?: string;     // status effect applied on hit (burn/slow/shock/poison)
+  magicSchool?: string;// spell school (fire/frost/spark/poison/arcane); from POC `school` on magic moves
 }
 
-export interface SynergyDef { key: string; name: string; }
-export interface ShapeDef   { key: string; name: string; }
+/** Adjacency-based synergy between two orthogonally adjacent cube types */
+export interface SynergyDef {
+  key: string;
+  name: string;
+  kind: 'adjacency';
+  icon: string;
+  effect: string;      // UA description of the bonus
+  /** Returns true when cube type `a` and cube type `b` form this synergy pair */
+  match: (a: string, b: string) => boolean;
+}
+
+/** Shape pattern of same-type cubes in a spatial arrangement */
+export interface ShapeDef {
+  key: string;
+  name: string;
+  kind: 'shape';
+  icon: string;
+  effect: string;      // UA description of the bonus
+  /** Detect matching shapes in a build; returns count of matches and the pixel index sets */
+  detect: (
+    build: Array<{ type: string; gx: number; gy: number }>,
+    byCell: Map<string, number>
+  ) => { count: number; sets: number[][] };
+}
