@@ -113,7 +113,9 @@ export function startCampaignBattle(opts: {
   const ZOOM_BREATH2 = 0.012;
   const ATB_GLOBAL2  = 1.0;
   const CARD_DUR2    = 2.5;
-  const RESULT_DUR2  = 2.2;   // slightly longer so "← Лоббі" is visible
+  const RESULT_DUR2  = 2.2;   // defeat banner — long enough to read + tap
+  const WIN_POP_DUR2 = 1.15;  // §D.1 stage-win heartbeat — short & punchy
+  const LEVELCLEAR_DUR2 = 3.0;// §D.2 level-complete ceremony — a beat to celebrate
   const BOSS_SCALE2  = 1.6;
   const BOSS_CADENCE2= 0.82;
 
@@ -1006,6 +1008,139 @@ export function startCampaignBattle(opts: {
   let stageHeroWon2 = false;
 
   /* --------------------------------------------------------------------------
+     REWARD-POP CHOREOGRAPHY (§D.1 stage-win pop · §C loss tally · §D.3 level-up)
+     A small homing-token system: on a stage win, coins + a cube fly from the
+     dead enemy to the run-tally pills (top-right), which scale-bump on landing.
+     ------------------------------------------------------------------------ */
+  interface RewardToken { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; dur: number; col: string; kind: 'coin' | 'cube' }
+  const rewardTokens2: RewardToken[] = [];
+  let runCoins2 = 0;        // coins earned this run (display tally; lerps up as tokens land)
+  let runCubes2 = 0;        // cubes earned this run
+  let coinShare2 = 0;       // coins added per landing coin-token (so tally hits exact total)
+  let coinPillBump2 = 0;    // scale-bump clock for the coin pill
+  let cubePillBump2 = 0;    // scale-bump clock for the cube pill
+  let winPopT2 = 0;         // "Етап пройдено!" scale-in clock
+  let nodeTickT2 = 0;       // green ✓ tick-pop clock on the just-cleared node
+  const levelUpPops2: Array<{ level: number; t: number; delay: number }> = []; // §D.3
+
+  function coinPillPos2(): { x: number; y: number } { return { x: W2 - 16, y: 88 }; }
+  function cubePillPos2(): { x: number; y: number } { return { x: W2 - 16, y: 110 }; }
+
+  function spawnRewardSpray2(reward: { xp: number; coins: number; cube?: string }): void {
+    winPopT2 = 0.0001;
+    const ex = creatureScreenX2(enemy2);
+    const ey = ground2 - 3 * PX2 * enemy2.scale;
+    const nCoins = Math.max(4, Math.min(14, Math.round(reward.coins / 3)));
+    coinShare2 = reward.coins / nCoins;
+    const cp = coinPillPos2();
+    for (let i = 0; i < nCoins; i++) {
+      const jx = (rnd2() - 0.5) * 56, jy = (rnd2() - 0.5) * 40;
+      rewardTokens2.push({
+        x: ex + jx, y: ey + jy, sx: ex + jx, sy: ey + jy,
+        tx: cp.x, ty: cp.y, t: -0.10 - i * 0.028, dur: 0.55, col: '#ffd24a', kind: 'coin',
+      });
+    }
+    if (reward.cube) {
+      const ct = cubePillPos2();
+      rewardTokens2.push({
+        x: ex, y: ey, sx: ex, sy: ey, tx: ct.x, ty: ct.y,
+        t: -0.20, dur: 0.62, col: CUBES[reward.cube]?.col ?? '#9fd0ff', kind: 'cube',
+      });
+    }
+  }
+
+  function stepRewardOverlay2(dt: number): void {
+    if (winPopT2 > 0) winPopT2 += dt;
+    if (nodeTickT2 > 0) nodeTickT2 += dt;
+    if (coinPillBump2 > 0) coinPillBump2 -= dt;
+    if (cubePillBump2 > 0) cubePillBump2 -= dt;
+    for (let i = rewardTokens2.length - 1; i >= 0; i--) {
+      const tk = rewardTokens2[i]!;
+      tk.t += dt;
+      if (tk.t < 0) continue;
+      const u = Math.min(1, tk.t / tk.dur);
+      const e = u * u * (3 - 2 * u);                 // smoothstep ease
+      tk.x = tk.sx + (tk.tx - tk.sx) * e;
+      tk.y = tk.sy + (tk.ty - tk.sy) * e - Math.sin(u * Math.PI) * 46; // arc lift
+      if (u >= 1) {
+        if (tk.kind === 'coin') { runCoins2 += coinShare2; coinPillBump2 = 0.28; }
+        else { runCubes2 += 1; cubePillBump2 = 0.32; }
+        rewardTokens2.splice(i, 1);
+      }
+    }
+    for (let i = levelUpPops2.length - 1; i >= 0; i--) {
+      const p = levelUpPops2[i]!;
+      if (p.delay > 0) { p.delay -= dt; continue; }
+      p.t += dt;
+      if (p.t > 1.6) levelUpPops2.splice(i, 1);
+    }
+  }
+
+  function drawRewardOverlay2(): void {
+    // Run-tally pills (top-right), with landing scale-bump
+    if (runCoins2 > 0 || rewardTokens2.some(t => t.kind === 'coin')) {
+      const cp = coinPillPos2();
+      const cb = 1 + (coinPillBump2 > 0 ? 0.24 * (coinPillBump2 / 0.28) : 0);
+      ctx2.save();
+      ctx2.translate(cp.x, cp.y); ctx2.scale(cb, cb);
+      ctx2.font = 'bold 14px system-ui'; ctx2.textAlign = 'right'; ctx2.textBaseline = 'middle';
+      ctx2.fillStyle = '#ffe070';
+      ctx2.fillText(`⬡ ${Math.round(runCoins2)}`, 0, 0);
+      ctx2.restore();
+    }
+    if (runCubes2 > 0 || rewardTokens2.some(t => t.kind === 'cube')) {
+      const bp = cubePillPos2();
+      const bb = 1 + (cubePillBump2 > 0 ? 0.24 * (cubePillBump2 / 0.32) : 0);
+      ctx2.save();
+      ctx2.translate(bp.x, bp.y); ctx2.scale(bb, bb);
+      ctx2.font = 'bold 13px system-ui'; ctx2.textAlign = 'right'; ctx2.textBaseline = 'middle';
+      ctx2.fillStyle = '#bfe0ff';
+      ctx2.fillText(`◼ ${runCubes2}`, 0, 0);
+      ctx2.restore();
+    }
+    // Flying tokens
+    for (const tk of rewardTokens2) {
+      if (tk.t < 0) continue;
+      ctx2.save();
+      ctx2.globalAlpha = 0.96;
+      if (tk.kind === 'coin') {
+        ctx2.fillStyle = tk.col;
+        ctx2.beginPath(); ctx2.arc(tk.x, tk.y, 4, 0, Math.PI * 2); ctx2.fill();
+        ctx2.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx2.beginPath(); ctx2.arc(tk.x - 1.2, tk.y - 1.2, 1.4, 0, Math.PI * 2); ctx2.fill();
+      } else {
+        ctx2.fillStyle = tk.col;
+        ctx2.fillRect(tk.x - 5, tk.y - 5, 10, 10);
+        ctx2.fillStyle = 'rgba(255,255,255,0.32)';
+        ctx2.fillRect(tk.x - 5, tk.y - 5, 10, 3);
+      }
+      ctx2.restore();
+    }
+    // Level-up badges (§D.3) — centred, stacked, staggered
+    let shown = 0;
+    for (const p of levelUpPops2) {
+      if (p.delay > 0) continue;
+      const u = Math.min(1, p.t / 0.22);
+      const sc = 0.5 + 0.5 * (1 - Math.pow(1 - u, 3)) + (p.t > 0.9 ? 0 : 0);
+      const fade = p.t > 1.2 ? Math.max(0, (1.6 - p.t) / 0.4) : 1;
+      const yy = H2 * 0.30 + shown * 34;
+      ctx2.save();
+      ctx2.globalAlpha = fade;
+      ctx2.translate(W2 / 2, yy); ctx2.scale(sc, sc);
+      ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+      ctx2.font = 'bold 22px system-ui'; ctx2.fillStyle = '#ffe24a';
+      ctx2.shadowColor = 'rgba(0,0,0,0.6)'; ctx2.shadowBlur = 6;
+      ctx2.fillText(`РІВЕНЬ ↑ ${p.level}`, 0, 0);
+      ctx2.shadowBlur = 0;
+      ctx2.font = 'bold 12px system-ui'; ctx2.fillStyle = '#bfe0ff';
+      ctx2.fillText('+1 кубик у білдер', 0, 18);
+      ctx2.restore();
+      shown++;
+    }
+    ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic'; ctx2.globalAlpha = 1;
+  }
+
+  /* --------------------------------------------------------------------------
      STAGE BANNER (lighter than full VS card — shows tier + stage number)
      ------------------------------------------------------------------------ */
   function drawStageBanner2(): void {
@@ -1061,39 +1196,141 @@ export function startCampaignBattle(opts: {
     ctx2.fillText(`HP ${f.maxHP}    Броня ${f.armor}    Шкода ${dmgStr}`, cx, baseY + 136);
   }
 
+  // Loss-screen button rects (shared by draw + pointer handlers, §C)
+  function lossBtnImprove2(): { x: number; y: number; w: number; h: number } {
+    const w = Math.min(220, W2 * 0.6), h = 44; return { x: W2 / 2 - w / 2, y: H2 * 0.52, w, h };
+  }
+  function lossBtnRetry2(): { x: number; y: number; w: number; h: number } {
+    const w = Math.min(150, W2 * 0.42), h = 34; return { x: W2 / 2 - w / 2, y: H2 * 0.52 + 54, w, h };
+  }
+
+  // Summarise this run's banked haul for the loss tally (§C)
+  function runHaulLine2(): string {
+    let xp = 0, coins = 0, cubes = 0;
+    for (const ev of rewards) {
+      if (ev.kind === 'xp') xp += ev.n;
+      else if (ev.kind === 'coins') coins += ev.n;
+      else if (ev.kind === 'cube') cubes += 1;
+      else if (ev.kind === 'loot') cubes += ev.cubes.length;
+    }
+    const parts: string[] = [];
+    if (xp > 0) parts.push(`+${xp} XP`);
+    if (coins > 0) parts.push(`⬡ ${coins}`);
+    if (cubes > 0) parts.push(`${cubes} кубик${cubes > 1 ? 'ів' : ''}`);
+    return parts.length ? parts.join('   ·   ') : 'нічого — спробуй ще!';
+  }
+
   function drawResultBanner2(): void {
-    ctx2.save();
-    ctx2.globalAlpha = 0.92;
-    // Inter-stage win: no exit button, just a brief "Етап пройдено!" flash
-    if (stageHeroWon2 && !sessionOver) {
-      const flashAlpha = Math.min(1, resultT2 * 1.6);
-      ctx2.globalAlpha = flashAlpha * 0.85;
-      ctx2.fillStyle = 'rgba(0,0,0,0.35)'; ctx2.fillRect(0, H2 * 0.38, W2, H2 * 0.14);
-      ctx2.globalAlpha = flashAlpha;
-      ctx2.textAlign = 'center';
-      ctx2.font = 'bold 32px system-ui'; ctx2.fillStyle = '#7fd0ff';
-      ctx2.fillText('Етап пройдено!', W2 / 2, H2 * 0.47);
-      ctx2.restore(); ctx2.textAlign = 'left';
+    const isLast = currentStageIdx === totalStages - 1;
+
+    // ---- §D.1 STAGE-WIN POP (minor/elite win) — short, fight stays visible ----
+    if (stageHeroWon2 && !isLast) {
+      ctx2.save();
+      const pop = winPopT2 > 0 ? Math.min(1, winPopT2 / 0.18) : 0;
+      const settle = winPopT2 > 0.18 ? Math.max(0, 1 - (winPopT2 - 0.18) * 3) : 0;
+      const scale = 0.6 + 0.4 * (1 - Math.pow(1 - pop, 3)) + 0.08 * settle * Math.sin((winPopT2) * 26);
+      const tier = stageTier(campaignLevel, currentStageIdx);
+      const bandCol = tier === 'elite' ? 'rgba(120,90,20,0.42)' : 'rgba(30,70,120,0.40)';
+      const txtCol  = tier === 'elite' ? '#ffd86a' : '#7fd0ff';
+      ctx2.globalAlpha = Math.min(1, winPopT2 * 5) * 0.85;
+      ctx2.fillStyle = bandCol; ctx2.fillRect(0, H2 * 0.40, W2, H2 * 0.10);
+      ctx2.globalAlpha = Math.min(1, winPopT2 * 6);
+      ctx2.save();
+      ctx2.translate(W2 / 2, H2 * 0.45); ctx2.scale(scale, scale);
+      ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+      ctx2.font = 'bold 34px system-ui'; ctx2.fillStyle = txtCol;
+      ctx2.shadowColor = 'rgba(0,0,0,0.55)'; ctx2.shadowBlur = 6;
+      ctx2.fillText('Етап пройдено!', 0, 0);
+      ctx2.shadowBlur = 0;
+      ctx2.restore();
+      ctx2.restore(); ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
       return;
     }
-    // Defeat or level-cleared: full banner with "← Лоббі" exit
-    ctx2.fillStyle = 'rgba(0,0,0,0.5)'; ctx2.fillRect(0, H2 * 0.30, W2, H2 * 0.24);
-    ctx2.textAlign = 'center';
-    ctx2.font = 'bold 60px system-ui'; ctx2.fillStyle = '#ffe24a';
-    ctx2.fillText('K.O.', W2 / 2, H2 * 0.41);
-    ctx2.font = 'bold 30px system-ui'; ctx2.fillStyle = resultWinnerColor2;
-    ctx2.fillText(resultText2, W2 / 2, H2 * 0.48);
-    // "← Лоббі" exit button — only shown on defeat or level-clear
-    const btnW = 140, btnH = 36, btnX = W2 / 2 - btnW / 2, btnY = H2 * 0.54;
-    ctx2.fillStyle = 'rgba(30,40,60,0.85)';
-    ctx2.beginPath();
-    ctx2.roundRect(btnX, btnY, btnW, btnH, 8);
-    ctx2.fill();
-    ctx2.strokeStyle = 'rgba(120,160,220,0.5)'; ctx2.lineWidth = 1.5;
-    ctx2.beginPath(); ctx2.roundRect(btnX, btnY, btnW, btnH, 8); ctx2.stroke();
-    ctx2.font = 'bold 16px system-ui'; ctx2.fillStyle = '#add0ff';
-    ctx2.fillText('← Лоббі', W2 / 2, btnY + 24);
-    ctx2.restore(); ctx2.textAlign = 'left';
+
+    // ---- §D.2 LEVEL-COMPLETE CEREMONY (boss cleared) ----
+    if (stageHeroWon2 && isLast) {
+      ctx2.save();
+      const ct = LEVELCLEAR_DUR2 - resultT2; // seconds since ceremony start
+      ctx2.globalAlpha = Math.min(1, ct * 2) * 0.6;
+      ctx2.fillStyle = 'rgba(0,0,0,0.6)'; ctx2.fillRect(0, 0, W2, H2);
+      ctx2.globalAlpha = 1;
+      ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+      // Title with scale-in + shimmer sweep
+      const tp = Math.min(1, ct / 0.3);
+      const tScale = 0.5 + 0.5 * (1 - Math.pow(1 - tp, 3));
+      ctx2.save();
+      ctx2.translate(W2 / 2, H2 * 0.34); ctx2.scale(tScale, tScale);
+      ctx2.font = 'bold 46px system-ui';
+      ctx2.fillStyle = '#ffd24a'; ctx2.shadowColor = 'rgba(255,180,40,0.5)'; ctx2.shadowBlur = 18;
+      ctx2.fillText(`РІВЕНЬ ${campaignLevel} ПРОЙДЕНО`, 0, 0);
+      ctx2.shadowBlur = 0;
+      // shimmer sweep
+      const sweepX = (-0.5 + (ct * 0.6) % 1.3) * 360;
+      const grd = ctx2.createLinearGradient(sweepX - 40, 0, sweepX + 40, 0);
+      grd.addColorStop(0, 'rgba(255,255,255,0)');
+      grd.addColorStop(0.5, 'rgba(255,255,255,0.5)');
+      grd.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx2.globalCompositeOperation = 'overlay';
+      ctx2.fillStyle = grd; ctx2.font = 'bold 46px system-ui';
+      ctx2.fillText(`РІВЕНЬ ${campaignLevel} ПРОЙДЕНО`, 0, 0);
+      ctx2.globalCompositeOperation = 'source-over';
+      ctx2.restore();
+      // Reward roll-up (count-up) after 0.5s — the boss reward (4× tier). It is
+      // banked in handleStageEnd *after* this window, so read it directly here.
+      if (ct > 0.5) {
+        const rr = Math.min(1, (ct - 0.5) / 0.7);
+        const br = stageReward(campaignLevel, currentStageIdx);
+        const cubes = br.cube ? 1 : 0;
+        ctx2.font = 'bold 22px system-ui'; ctx2.fillStyle = '#dfe7f4';
+        ctx2.fillText(`Здобуто:  +${Math.round(br.xp * rr)} XP   ⬡ ${Math.round(br.coins * rr)}${cubes ? `   ${Math.round(cubes * rr)} куб.` : ''}`, W2 / 2, H2 * 0.47);
+      }
+      // Next-level preview after 1.2s
+      if (ct > 1.2) {
+        ctx2.globalAlpha = Math.min(1, (ct - 1.2) * 2);
+        ctx2.font = 'bold 18px system-ui'; ctx2.fillStyle = '#8fd0ff';
+        ctx2.fillText(`Далі: Рівень ${campaignLevel + 1} →`, W2 / 2, H2 * 0.56);
+        ctx2.globalAlpha = 1;
+      }
+      ctx2.restore(); ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
+      return;
+    }
+
+    // ---- §C DEFEAT — "almost, not over" ----
+    ctx2.save();
+    ctx2.globalAlpha = Math.min(1, (RESULT_DUR2 - resultT2 + 0.2) * 2) * 0.6;
+    ctx2.fillStyle = 'rgba(0,0,0,0.6)'; ctx2.fillRect(0, 0, W2, H2);
+    ctx2.globalAlpha = 1;
+    ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+    // Headline (factual, numbered)
+    ctx2.font = 'bold 38px system-ui'; ctx2.fillStyle = '#ff8a6a';
+    ctx2.fillText(`Поразка на Етапі ${currentStageIdx + 1}`, W2 / 2, H2 * 0.30);
+    // Reframe: "Майже! Ти зібрав:" + run haul
+    ctx2.font = 'bold 22px system-ui'; ctx2.fillStyle = '#ffe24a';
+    ctx2.fillText('Майже! Ти зібрав:', W2 / 2, H2 * 0.385);
+    ctx2.font = 'bold 19px system-ui'; ctx2.fillStyle = '#cfe0ff';
+    ctx2.fillText(runHaulLine2(), W2 / 2, H2 * 0.435);
+    // Checkpoint reassurance
+    ctx2.font = '13px system-ui'; ctx2.fillStyle = '#90a4c0';
+    ctx2.fillText(`Чекпоінт збережено · Етап ${currentStageIdx + 1}`, W2 / 2, H2 * 0.475);
+    // Primary button: "Покращити героя →"
+    const bi = lossBtnImprove2();
+    const bg = ctx2.createLinearGradient(bi.x, bi.y, bi.x, bi.y + bi.h);
+    bg.addColorStop(0, '#2f6bbf'); bg.addColorStop(1, '#1b3d72');
+    ctx2.fillStyle = bg;
+    ctx2.beginPath(); ctx2.roundRect(bi.x, bi.y, bi.w, bi.h, 10); ctx2.fill();
+    ctx2.strokeStyle = '#7fb0ff'; ctx2.lineWidth = 1.5;
+    ctx2.beginPath(); ctx2.roundRect(bi.x, bi.y, bi.w, bi.h, 10); ctx2.stroke();
+    ctx2.font = 'bold 17px system-ui'; ctx2.fillStyle = '#eaf2ff';
+    ctx2.fillText('Покращити героя →', W2 / 2, bi.y + bi.h / 2 + 1);
+    // Secondary button: "Ще раз"
+    const br = lossBtnRetry2();
+    ctx2.fillStyle = 'rgba(28,36,54,0.85)';
+    ctx2.beginPath(); ctx2.roundRect(br.x, br.y, br.w, br.h, 8); ctx2.fill();
+    ctx2.strokeStyle = 'rgba(120,150,200,0.45)'; ctx2.lineWidth = 1.2;
+    ctx2.beginPath(); ctx2.roundRect(br.x, br.y, br.w, br.h, 8); ctx2.stroke();
+    ctx2.font = 'bold 14px system-ui'; ctx2.fillStyle = '#aac4e6';
+    ctx2.fillText('↺ Ще раз', W2 / 2, br.y + br.h / 2 + 1);
+    ctx2.restore(); ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
   }
 
   /* --------------------------------------------------------------------------
@@ -1141,8 +1378,11 @@ export function startCampaignBattle(opts: {
       const isMilestone = (s === 0) || (s % 5 === 0) || tier !== 'minor' || s === currentStageIdx;
       if (!useDotsAll && !isMilestone) continue;
 
-      const cleared  = s < currentStageIdx;
-      const isCurrent = s === currentStageIdx;
+      // During a stage-win result, the current node is "just cleared" — show it
+      // filled with a popping ✓ even before currentStageIdx advances (§D.1).
+      const justCleared = phase2 === 'result' && stageHeroWon2 && s === currentStageIdx;
+      const cleared  = s < currentStageIdx || justCleared;
+      const isCurrent = s === currentStageIdx && !justCleared;
       const isBoss   = tier === 'boss';    // stage 19
       const isElite  = tier === 'elite';   // stages 5, 10, 14
 
@@ -1202,11 +1442,17 @@ export function startCampaignBattle(opts: {
 
       // Checkmark on cleared nodes (only on wide screens, every 5th or special)
       if (cleared && (useDotsAll || isMilestone)) {
-        ctx2.globalAlpha = 0.8;
-        ctx2.font = `${r * 1.4 | 0}px system-ui`;
+        // Just-cleared node pops its ✓ in from the node-tick clock
+        const pop = justCleared && nodeTickT2 > 0 ? Math.min(1, nodeTickT2 / 0.22) : 1;
+        const tickScale = 0.4 + 0.6 * (1 - Math.pow(1 - pop, 3));
+        ctx2.save();
+        ctx2.globalAlpha = 0.85;
+        ctx2.translate(nx, trackY); ctx2.scale(tickScale, tickScale);
+        ctx2.font = `${r * 1.5 | 0}px system-ui`;
         ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
-        ctx2.fillStyle = '#a0e0a0';
-        ctx2.fillText('✓', nx, trackY);
+        ctx2.fillStyle = justCleared ? '#baffba' : '#a0e0a0';
+        ctx2.fillText('✓', 0, 0);
+        ctx2.restore();
         ctx2.textBaseline = 'alphabetic';
         ctx2.globalAlpha = 1;
       }
@@ -1283,10 +1529,25 @@ export function startCampaignBattle(opts: {
   }
 
   function startResult2(): void {
-    phase2 = 'result'; resultT2 = RESULT_DUR2;
+    phase2 = 'result';
     stageHeroWon2 = winner2 === hero2;
     resultText2 = stageHeroWon2 ? `${hero2.name} переміг!` : `${enemy2.name} переміг!`;
     resultWinnerColor2 = stageHeroWon2 ? '#7fd0ff' : enemy2.accent;
+    const isLast = currentStageIdx === totalStages - 1;
+    if (stageHeroWon2 && !isLast) {
+      // §D.1 stage-win heartbeat — short window, coin/cube spray + node tick
+      resultT2 = WIN_POP_DUR2;
+      hitstop2 = Math.max(hitstop2, 0.08);
+      spawnRewardSpray2(stageReward(campaignLevel, currentStageIdx));
+      nodeTickT2 = 0.0001;
+    } else if (stageHeroWon2 && isLast) {
+      // §D.2 boss cleared → level-complete ceremony (longer beat)
+      resultT2 = LEVELCLEAR_DUR2;
+      spawnRewardSpray2(stageReward(campaignLevel, currentStageIdx));
+    } else {
+      // Defeat — full banner, time to read + tap
+      resultT2 = RESULT_DUR2;
+    }
   }
 
   function handleStageEnd(): void {
@@ -1299,13 +1560,19 @@ export function startCampaignBattle(opts: {
       stagesWon++;
       state.campaign.stage = currentStageIdx + 1;
 
+      // §D.3 — queue a level-up pop per levelUp event (staggered)
+      let luDelay = 0.15;
+      for (const ev of rewardEvents) {
+        if (ev.kind === 'levelUp') { levelUpPops2.push({ level: ev.level, t: 0, delay: luDelay }); luDelay += 0.28; }
+      }
+
       if (currentStageIdx === totalStages - 1) {
-        // BOSS cleared → level complete
+        // BOSS cleared → level complete. Ceremony already played during the
+        // result window; exit shortly after (player may tap to skip).
         state.campaign.level = campaignLevel + 1;
         state.campaign.stage = 0;
         sessionOver = true;
-        // Brief delay then exit (player may also tap "← Лоббі" before timer fires)
-        setTimeout2c(1.6, () => {
+        setTimeout2c(0.3, () => {
           if (exitFired) return; exitFired = true;
           stop2();
           opts.onExit({ outcome: 'levelCleared', stagesWon, rewards });
@@ -1316,15 +1583,18 @@ export function startCampaignBattle(opts: {
         startCard2();
       }
     } else {
-      // Hero defeated — checkpoint stays at current stage
-      // state.campaign.stage already at currentStageIdx (we only advance on win)
+      // Hero defeated — checkpoint stays at current stage. No auto-exit: the
+      // "almost, not over" banner waits for the player to pick a path (§C).
       sessionOver = true;
-      setTimeout2c(1.6, () => {
-        if (exitFired) return; exitFired = true;
-        stop2();
-        opts.onExit({ outcome: 'defeated', stagesWon, rewards });
-      });
     }
+  }
+
+  // §C — retry the current stage in place (checkpoint kept, banked rewards kept)
+  function retryStage2(): void {
+    sessionOver = false; exitFired = false;
+    rewardTokens2.length = 0; levelUpPops2.length = 0;
+    winPopT2 = 0; nodeTickT2 = 0;
+    startCard2();
   }
 
   const delayed2c: Delayed[] = [];
@@ -1336,8 +1606,32 @@ export function startCampaignBattle(opts: {
   }
 
   /* --------------------------------------------------------------------------
-     POINTER HANDLER — "← Лоббі" early exit (works for mouse + touch)
+     POINTER HANDLER — loss-screen buttons (Покращити героя / Ще раз) + skip
      ------------------------------------------------------------------------ */
+  function inRect2(cx: number, cy: number, r: { x: number; y: number; w: number; h: number }): boolean {
+    return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
+  }
+  function exitToLobby2(): void {
+    if (exitFired) return; exitFired = true;
+    stop2();
+    opts.onExit({ outcome: stageHeroWon2 ? 'levelCleared' : 'defeated', stagesWon, rewards });
+  }
+  // Resolve a tap during the result phase. Returns true if it consumed the tap.
+  function handleResultTap2(cx: number, cy: number): boolean {
+    if (phase2 !== 'result') return false;
+    const isLast = currentStageIdx === totalStages - 1;
+    if (!stageHeroWon2) {
+      // Defeat banner — two choices
+      if (inRect2(cx, cy, lossBtnRetry2())) { retryStage2(); return true; }
+      if (inRect2(cx, cy, lossBtnImprove2())) { exitToLobby2(); return true; }
+      return false;
+    }
+    if (stageHeroWon2 && isLast && sessionOver) {
+      // Level-complete ceremony — tap anywhere skips to lobby
+      exitToLobby2(); return true;
+    }
+    return false;
+  }
   let _c2PdX = -1, _c2PdY = -1;
   function handlePointerDown2(ev: PointerEvent): void {
     ev.preventDefault();
@@ -1345,33 +1639,18 @@ export function startCampaignBattle(opts: {
   }
   function handlePointerUp2(ev: PointerEvent): void {
     ev.preventDefault();
-    // Only allow exit tap on defeat or level-clear (sessionOver=true), never on inter-stage win
-    if (phase2 !== 'result' || !sessionOver) { _c2PdX = -1; _c2PdY = -1; return; }
     const dx = ev.clientX - _c2PdX, dy = ev.clientY - _c2PdY;
-    if (_c2PdX < 0 || dx * dx + dy * dy > 400) { _c2PdX = -1; _c2PdY = -1; return; }
+    const moved = _c2PdX < 0 || dx * dx + dy * dy > 400;
     _c2PdX = -1; _c2PdY = -1;
-    const btnW = 140, btnH = 36, btnX = W2 / 2 - btnW / 2, btnY = H2 * 0.54;
-    const cx = ev.clientX, cy = ev.clientY;
-    if (cx >= btnX && cx <= btnX + btnW && cy >= btnY && cy <= btnY + btnH) {
-      if (exitFired) return; exitFired = true;
-      stop2();
-      opts.onExit({ outcome: stageHeroWon2 ? 'levelCleared' : 'defeated', stagesWon, rewards });
-    }
+    if (moved) return;
+    handleResultTap2(ev.clientX, ev.clientY);
   }
   window.addEventListener('pointerdown', handlePointerDown2);
   window.addEventListener('pointerup', handlePointerUp2);
   // Legacy click fallback
   function handleClick2(ev: MouseEvent): void {
     if (_c2PdX >= 0) return; // pointer events already handled
-    // Only allow exit on defeat or level-clear, never on inter-stage win
-    if (phase2 !== 'result' || !sessionOver) return;
-    const btnW = 140, btnH = 36, btnX = W2 / 2 - btnW / 2, btnY = H2 * 0.54;
-    const cx = ev.clientX, cy = ev.clientY;
-    if (cx >= btnX && cx <= btnX + btnW && cy >= btnY && cy <= btnY + btnH) {
-      if (exitFired) return; exitFired = true;
-      stop2();
-      opts.onExit({ outcome: stageHeroWon2 ? 'levelCleared' : 'defeated', stagesWon, rewards });
-    }
+    handleResultTap2(ev.clientX, ev.clientY);
   }
   window.addEventListener('click', handleClick2);
 
@@ -1395,6 +1674,7 @@ export function startCampaignBattle(opts: {
 
     // Always tick delayed2c so auto-exit fires even during result phase
     stepDelayed2c(rawDt);
+    stepRewardOverlay2(rawDt);
 
     if (phase2 === 'card') {
       cardT2 -= rawDt;
@@ -1423,6 +1703,7 @@ export function startCampaignBattle(opts: {
       drawStageBanner2();
       drawHUD2();
       drawStageProgressBar2();
+      drawRewardOverlay2();
       rafId2 = requestAnimationFrame(frame2);
       return;
     }
@@ -1449,6 +1730,7 @@ export function startCampaignBattle(opts: {
     drawHUD2();
     drawStageProgressBar2();
     if (phase2 === 'result') drawResultBanner2();
+    drawRewardOverlay2();
 
     rafId2 = requestAnimationFrame(frame2);
   }
