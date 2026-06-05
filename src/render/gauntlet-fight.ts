@@ -2297,6 +2297,7 @@ export function startCampaignBattle(opts: {
   let stagesWon = 0;
   const rewards: RewardEvent[] = [];
   let sessionOver = false;
+  let exitFired = false; // guard against double-exit (tap + auto-timer)
 
   // Card / result banner state
   let cardT2 = 0, resultT2 = 0;
@@ -2362,13 +2363,26 @@ export function startCampaignBattle(opts: {
   function drawResultBanner2(): void {
     ctx2.save();
     ctx2.globalAlpha = 0.92;
+    // Inter-stage win: no exit button, just a brief "Етап пройдено!" flash
+    if (stageHeroWon2 && !sessionOver) {
+      const flashAlpha = Math.min(1, resultT2 * 1.6);
+      ctx2.globalAlpha = flashAlpha * 0.85;
+      ctx2.fillStyle = 'rgba(0,0,0,0.35)'; ctx2.fillRect(0, H2 * 0.38, W2, H2 * 0.14);
+      ctx2.globalAlpha = flashAlpha;
+      ctx2.textAlign = 'center';
+      ctx2.font = 'bold 32px system-ui'; ctx2.fillStyle = '#7fd0ff';
+      ctx2.fillText('Етап пройдено!', W2 / 2, H2 * 0.47);
+      ctx2.restore(); ctx2.textAlign = 'left';
+      return;
+    }
+    // Defeat or level-cleared: full banner with "← Лоббі" exit
     ctx2.fillStyle = 'rgba(0,0,0,0.5)'; ctx2.fillRect(0, H2 * 0.30, W2, H2 * 0.24);
     ctx2.textAlign = 'center';
     ctx2.font = 'bold 60px system-ui'; ctx2.fillStyle = '#ffe24a';
     ctx2.fillText('K.O.', W2 / 2, H2 * 0.41);
     ctx2.font = 'bold 30px system-ui'; ctx2.fillStyle = resultWinnerColor2;
     ctx2.fillText(resultText2, W2 / 2, H2 * 0.48);
-    // "← Лоббі" exit button
+    // "← Лоббі" exit button — only shown on defeat or level-clear
     const btnW = 140, btnH = 36, btnX = W2 / 2 - btnW / 2, btnY = H2 * 0.54;
     ctx2.fillStyle = 'rgba(30,40,60,0.85)';
     ctx2.beginPath();
@@ -2381,13 +2395,138 @@ export function startCampaignBattle(opts: {
     ctx2.restore(); ctx2.textAlign = 'left';
   }
 
-  function drawHUD2(): void {
-    const txt = `Рівень ${campaignLevel} · Етап ${currentStageIdx + 1}/${totalStages}: ${hero2?.name ?? '?'} vs ${enemy2?.name ?? '?'}`;
+  /* --------------------------------------------------------------------------
+     STAGE PROGRESS BAR — Capybara-Go style row of stage nodes at screen top
+     ------------------------------------------------------------------------ */
+  function drawStageProgressBar2(): void {
+    // Position: top of screen, below the HUD label (which is ~34px tall)
+    const BAR_TOP = 40;
+    const BAR_H   = 28; // total height of the bar strip
+    const PAD_X   = 12; // horizontal margin
+    const barW    = W2 - PAD_X * 2;
+
+    // Background strip
+    ctx2.fillStyle = 'rgba(6,10,18,0.72)';
+    ctx2.fillRect(PAD_X - 4, BAR_TOP - 2, barW + 8, BAR_H + 4);
+
+    // Progress track line
+    const trackY  = BAR_TOP + BAR_H / 2;
+    const trackX0 = PAD_X + 8;
+    const trackX1 = PAD_X + barW - 8;
+    const trackLen = trackX1 - trackX0;
+
+    ctx2.strokeStyle = 'rgba(80,110,160,0.5)';
+    ctx2.lineWidth   = 3;
+    ctx2.beginPath(); ctx2.moveTo(trackX0, trackY); ctx2.lineTo(trackX1, trackY); ctx2.stroke();
+
+    // Filled portion (stages already cleared this run + current)
+    const clearedUpTo = currentStageIdx; // 0-based: stages 0..clearedUpTo-1 done, clearedUpTo is current
+    if (clearedUpTo > 0) {
+      const fillX1 = trackX0 + (clearedUpTo / (totalStages - 1)) * trackLen;
+      ctx2.strokeStyle = '#4488cc';
+      ctx2.lineWidth   = 3;
+      ctx2.beginPath(); ctx2.moveTo(trackX0, trackY); ctx2.lineTo(Math.min(fillX1, trackX1), trackY); ctx2.stroke();
+    }
+
+    // Stage nodes — on narrow screens (<480px) only show milestones; wide screens get all 20 dots
+    const useDotsAll = W2 >= 480;
+    const nodeRadius = useDotsAll ? 5 : 6;
+
+    for (let s = 0; s < totalStages; s++) {
+      const tier = stageTier(campaignLevel, s);
+      const nx   = trackX0 + (s / (totalStages - 1)) * trackLen;
+
+      // Skip minor non-milestone nodes on narrow screens (show every 5th, elites, boss, current)
+      const isMilestone = (s === 0) || (s % 5 === 0) || tier !== 'minor' || s === currentStageIdx;
+      if (!useDotsAll && !isMilestone) continue;
+
+      const cleared  = s < currentStageIdx;
+      const isCurrent = s === currentStageIdx;
+      const isBoss   = tier === 'boss';    // stage 19
+      const isElite  = tier === 'elite';   // stages 5, 10, 14
+
+      // Pick colour / size
+      let nodeCol: string;
+      let r = nodeRadius;
+      if (isBoss) {
+        nodeCol = cleared ? '#cc4444' : isCurrent ? '#ff6b6b' : '#663333';
+        r = useDotsAll ? 8 : 10;
+      } else if (isElite) {
+        nodeCol = cleared ? '#b8912a' : isCurrent ? '#e3b341' : '#5a4818';
+        r = useDotsAll ? 7 : 9;
+      } else {
+        nodeCol = cleared ? '#2a6a9a' : isCurrent ? '#7fd0ff' : '#1a3550';
+      }
+
+      // Draw node
+      if (isBoss) {
+        // Diamond shape for boss
+        const d = r + 2;
+        ctx2.save();
+        ctx2.translate(nx, trackY);
+        ctx2.rotate(Math.PI / 4);
+        ctx2.fillStyle = nodeCol;
+        ctx2.fillRect(-d / 1.5, -d / 1.5, d * 1.33, d * 1.33);
+        ctx2.restore();
+        // Skull icon on top (small text)
+        ctx2.font = `${r + 6}px system-ui`;
+        ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+        ctx2.fillStyle = '#fff';
+        ctx2.fillText('💀', nx, trackY);
+        ctx2.textBaseline = 'alphabetic';
+      } else if (isElite) {
+        // Diamond shape for elite
+        const d = r + 2;
+        ctx2.save();
+        ctx2.translate(nx, trackY);
+        ctx2.rotate(Math.PI / 4);
+        ctx2.fillStyle = nodeCol;
+        ctx2.fillRect(-d / 1.5, -d / 1.5, d * 1.33, d * 1.33);
+        ctx2.restore();
+      } else {
+        // Circle for minor stages
+        ctx2.fillStyle = nodeCol;
+        ctx2.beginPath(); ctx2.arc(nx, trackY, r, 0, Math.PI * 2); ctx2.fill();
+      }
+
+      // Pulsing ring on current stage
+      if (isCurrent) {
+        const pulse = 0.5 + 0.5 * Math.sin(t2 * 6);
+        ctx2.globalAlpha = 0.6 * pulse;
+        ctx2.strokeStyle = isBoss ? '#ff6b6b' : isElite ? '#e3b341' : '#7fd0ff';
+        ctx2.lineWidth = 2;
+        ctx2.beginPath(); ctx2.arc(nx, trackY, r + 4, 0, Math.PI * 2); ctx2.stroke();
+        ctx2.globalAlpha = 1;
+      }
+
+      // Checkmark on cleared nodes (only on wide screens, every 5th or special)
+      if (cleared && (useDotsAll || isMilestone)) {
+        ctx2.globalAlpha = 0.8;
+        ctx2.font = `${r * 1.4 | 0}px system-ui`;
+        ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+        ctx2.fillStyle = '#a0e0a0';
+        ctx2.fillText('✓', nx, trackY);
+        ctx2.textBaseline = 'alphabetic';
+        ctx2.globalAlpha = 1;
+      }
+    }
+
+    // Label: «Рівень L · Етап S/20»
+    const labelTxt = `Рівень ${campaignLevel} · Етап ${currentStageIdx + 1}/${totalStages}`;
+    ctx2.font = 'bold 11px system-ui';
     ctx2.textAlign = 'center'; ctx2.textBaseline = 'alphabetic';
-    ctx2.font = 'bold 14px system-ui';
-    const w = ctx2.measureText(txt).width + 24;
-    ctx2.fillStyle = 'rgba(8,12,20,0.6)'; ctx2.fillRect(W2 / 2 - w / 2, 8, w, 26);
-    ctx2.fillStyle = '#cfe0ff'; ctx2.fillText(txt, W2 / 2, 26);
+    ctx2.fillStyle = 'rgba(180,200,230,0.75)';
+    ctx2.fillText(labelTxt, W2 / 2, BAR_TOP - 4);
+    ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
+  }
+
+  function drawHUD2(): void {
+    const txt = `${hero2?.name ?? '?'} vs ${enemy2?.name ?? '?'}`;
+    ctx2.textAlign = 'center'; ctx2.textBaseline = 'alphabetic';
+    ctx2.font = 'bold 13px system-ui';
+    const tw = ctx2.measureText(txt).width + 20;
+    ctx2.fillStyle = 'rgba(8,12,20,0.6)'; ctx2.fillRect(W2 / 2 - tw / 2, 8, tw, 22);
+    ctx2.fillStyle = '#cfe0ff'; ctx2.fillText(txt, W2 / 2, 24);
     ctx2.textAlign = 'left';
   }
 
@@ -2464,8 +2603,9 @@ export function startCampaignBattle(opts: {
         state.campaign.level = campaignLevel + 1;
         state.campaign.stage = 0;
         sessionOver = true;
-        // Brief delay then exit
+        // Brief delay then exit (player may also tap "← Лоббі" before timer fires)
         setTimeout2c(1.6, () => {
+          if (exitFired) return; exitFired = true;
           stop2();
           opts.onExit({ outcome: 'levelCleared', stagesWon, rewards });
         });
@@ -2479,6 +2619,7 @@ export function startCampaignBattle(opts: {
       // state.campaign.stage already at currentStageIdx (we only advance on win)
       sessionOver = true;
       setTimeout2c(1.6, () => {
+        if (exitFired) return; exitFired = true;
         stop2();
         opts.onExit({ outcome: 'defeated', stagesWon, rewards });
       });
@@ -2503,17 +2644,17 @@ export function startCampaignBattle(opts: {
   }
   function handlePointerUp2(ev: PointerEvent): void {
     ev.preventDefault();
-    if (phase2 !== 'result') { _c2PdX = -1; _c2PdY = -1; return; }
+    // Only allow exit tap on defeat or level-clear (sessionOver=true), never on inter-stage win
+    if (phase2 !== 'result' || !sessionOver) { _c2PdX = -1; _c2PdY = -1; return; }
     const dx = ev.clientX - _c2PdX, dy = ev.clientY - _c2PdY;
     if (_c2PdX < 0 || dx * dx + dy * dy > 400) { _c2PdX = -1; _c2PdY = -1; return; }
     _c2PdX = -1; _c2PdY = -1;
     const btnW = 140, btnH = 36, btnX = W2 / 2 - btnW / 2, btnY = H2 * 0.54;
     const cx = ev.clientX, cy = ev.clientY;
     if (cx >= btnX && cx <= btnX + btnW && cy >= btnY && cy <= btnY + btnH) {
-      if (sessionOver) return;
-      sessionOver = true;
+      if (exitFired) return; exitFired = true;
       stop2();
-      opts.onExit({ outcome: 'defeated', stagesWon, rewards });
+      opts.onExit({ outcome: stageHeroWon2 ? 'levelCleared' : 'defeated', stagesWon, rewards });
     }
   }
   window.addEventListener('pointerdown', handlePointerDown2);
@@ -2521,14 +2662,14 @@ export function startCampaignBattle(opts: {
   // Legacy click fallback
   function handleClick2(ev: MouseEvent): void {
     if (_c2PdX >= 0) return; // pointer events already handled
-    if (phase2 !== 'result') return;
+    // Only allow exit on defeat or level-clear, never on inter-stage win
+    if (phase2 !== 'result' || !sessionOver) return;
     const btnW = 140, btnH = 36, btnX = W2 / 2 - btnW / 2, btnY = H2 * 0.54;
     const cx = ev.clientX, cy = ev.clientY;
     if (cx >= btnX && cx <= btnX + btnW && cy >= btnY && cy <= btnY + btnH) {
-      if (sessionOver) return;
-      sessionOver = true;
+      if (exitFired) return; exitFired = true;
       stop2();
-      opts.onExit({ outcome: 'defeated', stagesWon, rewards });
+      opts.onExit({ outcome: stageHeroWon2 ? 'levelCleared' : 'defeated', stagesWon, rewards });
     }
   }
   window.addEventListener('click', handleClick2);
@@ -2580,6 +2721,7 @@ export function startCampaignBattle(opts: {
     if (phase2 === 'card') {
       drawStageBanner2();
       drawHUD2();
+      drawStageProgressBar2();
       rafId2 = requestAnimationFrame(frame2);
       return;
     }
@@ -2604,6 +2746,7 @@ export function startCampaignBattle(opts: {
     drawFloaters2();
     drawLog2();
     drawHUD2();
+    drawStageProgressBar2();
     if (phase2 === 'result') drawResultBanner2();
 
     rafId2 = requestAnimationFrame(frame2);
