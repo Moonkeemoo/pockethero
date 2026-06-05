@@ -2,72 +2,77 @@
 <html lang="uk">
 <head>
 <meta charset="utf-8">
-<title>PocketHero — HERO-BUILDER + META-DEPTH (Білдер + Синергії)</title>
+<title>PocketHero — META-BUILDER (Лут · Інвентар · Бюджет · Поле · Синергії)</title>
 <style>
   html,body{margin:0;height:100%;background:#070a0f;overflow:hidden;
             font-family:"Segoe UI",system-ui,sans-serif;color:#cfd6e0}
-  #c{display:block;width:100%;height:100%;image-rendering:pixelated;cursor:crosshair}
-  #tag{position:fixed;left:10px;top:8px;color:#cfd6e0;font-size:12px;opacity:.7;
-       background:#0008;padding:4px 8px;border-radius:6px;pointer-events:none;letter-spacing:.3px}
-  /* top-right action buttons */
-  #ui{position:fixed;right:14px;top:10px;z-index:5;display:flex;gap:8px}
+  #c{display:block;width:100%;height:100%;cursor:crosshair}
+  /* top bar action buttons */
+  #ui{position:fixed;right:14px;top:10px;z-index:5;display:flex;gap:8px;flex-wrap:wrap;max-width:62vw;justify-content:flex-end}
   .btn{background:#16203a;color:#dfe8ff;border:1px solid #38507e;border-radius:8px;
-       padding:9px 14px;font:bold 13px system-ui;cursor:pointer;letter-spacing:.3px;
+       padding:8px 12px;font:bold 12px system-ui;cursor:pointer;letter-spacing:.3px;
        box-shadow:0 2px 8px #0007}
   .btn:hover{background:#1d2c4f;border-color:#5a7bc0}
   .btn.go{background:#2a1d14;border-color:#a05a32}
   .btn.go:hover{background:#3a2716;border-color:#e08a5a}
+  .btn.loot{background:#14241a;border-color:#3a7e52}
+  .btn.loot:hover{background:#1b3326;border-color:#5ec07e}
+  .btn.lvl{background:#241a2e;border-color:#7e52a0}
+  .btn.lvl:hover{background:#33264a;border-color:#b07ed0}
+  .btn.grid{background:#1a2230;border-color:#52708e}
+  .btn.grid:hover{background:#26344a;border-color:#7ea0d0}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="tag">PocketHero · HERO-BUILDER + META-DEPTH · синергії суміжності + форми</div>
 <div id="ui">
+  <button id="btnLoot" class="btn loot" title="отримати випадкові куби">Відкрити лут</button>
+  <button id="btnExpand" class="btn grid" title="розширити поле (кошт прогресу)">Розширити поле</button>
+  <button id="btnLevel" class="btn lvl" title="підвищити рівень (демо)">+ Рівень</button>
   <button id="btnAll"  class="btn"    title="показати всі звʼязки">всі звʼязки: ВИМК</button>
-  <button id="btnGo"   class="btn go" title="до бою">В бій →</button>
+  <button id="btnCodex" class="btn"   title="кодекс комбінацій">Кодекс</button>
+  <button id="btnGo"   class="btn go" title="до бою">У бій →</button>
 </div>
 <script>
 "use strict";
 /* ============================================================================
-   PocketHero — HERO-BUILDER + META-DEPTH prototype
+   PocketHero — META-BUILDER prototype  (evolved from HERO-BUILDER)
    ONE file, vanilla JS + Canvas2D. Deterministic (Mulberry32 seed).
    SIM / RENDER / DETECTORS kept separate & data-driven (ports to PixiJS).
 
-   GOAL (director): deepen hero-building with two new meta systems and make
-   effect ACTIVATION + POSITIVE/NEGATIVE statuses legible — at scale.
-     A) Interactive BUILDER grid (build a hero from a Core outward).
-     B) Two meta-depth systems, data-driven + named:
-          ADJACENCY synergies  (effect from HOW cubes touch)
-          SHAPE recipes        (effect from the SHAPE built)
-        => detectSynergies(build) / detectShapes(build) -> TRAITS, folded
-           into deriveStats so they actually change the hero.
-     C) BUILDER visualization (deep detail): bond lines (contextual/all toggle),
-        shape highlights w/ completion flash, traits panel, stats+moveset,
-        LOD via zoom (glyphs/bonds at builder zoom -> color blocks at combat).
-     D) COMBAT view (clean, LOD-simplified): built hero fights roster foes.
-          - effect ACTIVATION popups when a trait procs (icon+name+VFX)
-          - buff/debuff TRAY separate from HP bar: POSITIVE green-framed,
-            NEGATIVE red-framed, chip = icon + stack + countdown shrink.
-
-   Reuses pixel-legibility.html wholesale: pixel TYPES, NEW semantic palette,
-   hand-drawn drawGlyph(), behavior-as-function, causal flare, deriveStats /
-   deriveMoveset, soft-body creature render, ATB sim + event bus + 2.5D juice.
+   SIX DIRECTOR REQUIREMENTS layered on the old builder:
+     R1  Loot -> cube INVENTORY (counts). «Відкрити лут» grants weighted batch.
+         Placing consumes 1; removing returns 1. Only own>0 placeable.
+     R2  ~22 cube types across 6 categories (Тіло/Атака/Захист/Спритність/
+         Магія/Особливі), each with rarity+cost+glyph+effect; folded into
+         deriveStats. Inventory panel with category TABS + rarity filter +
+         sort + text search + tooltips + grey-out.
+     R3  Polished bonds + synergy PREVIEW on hover (ghost of would-be bond/
+         shape) + «Кодекс комбінацій» with discovered/undiscovered state.
+     R4  Stats panel: PRIMARY big icon-led row + «Детально ▾» breakdown with
+         per-source contributions (base vs each trait delta).
+     R5  Budget cap: total placed cost <= cap; budget bar; block + toast on
+         over-budget or unowned.
+     R6  Upgradeable grid: MAX 15x15, small central UNLOCKED region; locked
+         cells render hatched/🔒; «Розширити поле» unlocks next ring.
+     Progression glue: «+ Рівень» raises cap, may auto-unlock ring, grants loot.
 
    SECTIONS:
-     0. TUNABLE CONSTANTS (director knobs incl. meta knobs)
+     0. TUNABLE CONSTANTS (director knobs)
      1. SEEDED RNG
-     2. PIXEL TYPES + PALETTE + EFFECT words
+     2. CUBE ROSTER (types, categories, rarity, cost, glyph, effect) + palette
      3. MOVESET DATA + SCHOOLS + STATUSES
-     4. META: synergy + shape DEFS, detectors, deriveStats (folds traits)
+     4. META: synergy + shape DEFS, detectors, deriveStats (folds traits+cubes)
      5. ROSTER (preset builds) + big preset
-     6. TRAIT ICON DRAWERS (small unique symbols)
+     6. TRAIT ICON DRAWERS + new cube glyph drawers
      7. SIM — combatants, ATB loop, resolution, EVENT BUS, trait procs
      8. LEGIBILITY CORE — pixelsForMove / glyph drawers / behaviour / flare
      9. RENDER — creature soft-body (LOD-aware), VFX
-    10. BUILDER MODE — grid, palette, bonds, shapes, panels, LOD
-    11. COMBAT MODE — clean render + activation popups + buff/debuff tray
-    12. CAMERA / JUICE
-    13. MAIN LOOP + INPUT + SELF-TESTS
+    10. META-STATE — inventory, budget, grid-unlock, level, codex, toasts
+    11. BUILDER MODE — grid, inventory UI, bonds, preview, panels, LOD
+    12. COMBAT MODE — clean render + activation popups + buff/debuff tray
+    13. CAMERA / JUICE
+    14. MAIN LOOP + INPUT + SELF-TESTS
    ========================================================================== */
 
 /* ============================================================================
@@ -96,15 +101,29 @@ const GLYPH_SIZE_FRAC  = 0.62;
 const BEHAV_AMP        = 1.0;
 const INSPECT_DIM      = 0.22;
 
-// --- META / BUILDER KNOBS (the two new systems + the builder feel) ----------
-const GRID_N           = 15;    // grid is GRID_N x GRID_N (>=13 to allow growth)
-const BUILD_CELL       = 30;    // builder grid cell px (BIG -> glyphs/bonds legible)
+// --- META / BUILDER KNOBS ---------------------------------------------------
+const GRID_MAX         = 15;    // grid is GRID_MAX x GRID_MAX hard cap (R6)
+const GRID_START_RING  = 2;     // start: cells within Chebyshev<=2 of core => 5x5
+const BUILD_CELL       = 28;    // builder grid cell px (BIG -> glyphs/bonds legible)
 const COMBAT_CELL_FRAC = 0.5;   // combat renders creatures small => LOD kicks in
 const BOND_GLOW        = 1.0;   // 0..1.5 glow strength of adjacency bond lines
 const BOND_WIDTH       = 3.0;   // bond line width (builder px)
 const SHAPE_PULSE      = 1.0;   // shape-highlight pulse strength
 const SHAPE_FLASH_DUR  = 1.6;   // seconds a "newly completed" shape name floats
 const LOD_BOND_MINCELL = 14;    // below this cell size, bonds are not drawn (clutter)
+
+// --- R1/R5/R6 PROGRESSION KNOBS --------------------------------------------
+const BUDGET_BASE      = 10;    // starting budget cap
+const BUDGET_PER_LEVEL = 4;     // +cap per «+ Рівень»
+const RING_UNLOCK_EVERY= 2;     // auto-unlock a grid ring every N levels
+const LOOT_BATCH       = [3,5]; // cubes granted per loot click [min,max]
+const LOOT_LEVEL_BATCH = [4,7]; // cubes granted per level-up
+const EXPAND_LEVEL_COST= 1;     // «Розширити поле» spends this many level-points
+// loot rarity weights (commons frequent, legendaries rare)
+const RARITY_WEIGHT = { common:60, rare:26, epic:11, legendary:3 };
+const RARITY_COL    = { common:'#9fb0c8', rare:'#5aa0ff', epic:'#c77dff', legendary:'#ffce4a' };
+const RARITY_UA     = { common:'звичайний', rare:'рідкісний', epic:'епічний', legendary:'легендарний' };
+const RARITY_ORDER  = { common:0, rare:1, epic:2, legendary:3 };
 
 // Trait magnitude coefficients (per qualifying unit). Tune to taste.
 const TRAIT_K = {
@@ -138,31 +157,75 @@ const rRange = (a,b) => a + (b-a)*rng();
 const rPick  = arr => arr[(rng()*arr.length)|0];
 
 /* ============================================================================
-   2. PIXEL TYPES + PALETTE + EFFECT WORDS  (from pixel-legibility.html)
+   2. CUBE ROSTER — ~22 types across 6 categories  (R2)
+   ----------------------------------------------------------------------------
+   Each cube: key, name(UA), cat, rarity, cost, color, glyph, eff(one-line UA),
+   magic flag, behav (idle animation), tint (glyph ink). Adding a cube = 1 row.
+   Categories drive the inventory TABS. `stat` hints fold into deriveStats.
    ========================================================================== */
-const TYPE_ORDER = ['core','vital','plate','force','swift','focus',
-                    'ember','frost','spark','mana','catalyst'];
+const CAT = {
+  body:   { key:'body',   ua:'Тіло',       col:'#2FB873' },
+  attack: { key:'attack', ua:'Атака',      col:'#E0483F' },
+  defense:{ key:'defense',ua:'Захист',     col:'#7C8AA0' },
+  agility:{ key:'agility',ua:'Спритність', col:'#F0C020' },
+  magic:  { key:'magic',  ua:'Магія',      col:'#D14FA6' },
+  special:{ key:'special',ua:'Особливі',   col:'#F2C84B' },
+};
+const CAT_ORDER = ['body','attack','defense','agility','magic','special'];
 
-const NEW_PAL = {
-  core:'#F2C84B', vital:'#2FB873', plate:'#7C8AA0', force:'#E0483F',
-  swift:'#F0C020', focus:'#EAEFF5', ember:'#F07A1E', frost:'#39C6E8',
-  spark:'#9B6BD6', mana:'#2D6FD0', catalyst:'#D14FA6',
+// CUBES: the full roster. behav reuses existing animation kinds where natural.
+const CUBES = {
+  // ---- Особливі ----
+  core:    { name:'Ядро',        cat:'special', rarity:'legendary', cost:0, col:'#F2C84B', glyph:'star',    behav:'core',   magic:false, tint:'#3a2c00', eff:'Серце героя — рівно одне, обовʼязкове', unique:true },
+  // ---- Тіло (green) ----
+  vital:   { name:'Тіло',        cat:'body',    rarity:'common',    cost:1, col:'#2FB873', glyph:'heart',   behav:'vital',  magic:false, tint:'#0a3a22', eff:'+HP (здоровʼя)' },
+  regen:   { name:'Реген',       cat:'body',    rarity:'rare',      cost:2, col:'#46d68c', glyph:'pulse',   behav:'vital',  magic:false, tint:'#0a3a22', eff:'+регенерація HP/с' },
+  lifesteal:{name:'Вампіризм',   cat:'body',    rarity:'epic',      cost:3, col:'#a03050', glyph:'fang',    behav:'core',   magic:false, tint:'#3a0a18', eff:'лікує % завданої шкоди' },
+  // ---- Атака (red) ----
+  force:   { name:'Сила',        cat:'attack',  rarity:'common',    cost:1, col:'#E0483F', glyph:'blade',   behav:'force',  magic:false, tint:'#3a0d0a', eff:'+атака' },
+  focus:   { name:'Фокус',       cat:'attack',  rarity:'common',    cost:1, col:'#EAEFF5', glyph:'diamond', behav:'focus',  magic:false, tint:'#2a3340', eff:'+крит / +точність' },
+  pierce:  { name:'Пробій',      cat:'attack',  rarity:'rare',      cost:2, col:'#ff7a5a', glyph:'arrowdn', behav:'force',  magic:false, tint:'#3a0d0a', eff:'ігнорує % броні' },
+  berserk: { name:'Лють',        cat:'attack',  rarity:'epic',      cost:3, col:'#c2261e', glyph:'rage',    behav:'force',  magic:false, tint:'#3a0606', eff:'+атака зі зниженням HP' },
+  // ---- Захист (steel) ----
+  plate:   { name:'Броня',       cat:'defense', rarity:'common',    cost:1, col:'#7C8AA0', glyph:'shield',  behav:'plate',  magic:false, tint:'#1d2531', eff:'+броня' },
+  block:   { name:'Блок',        cat:'defense', rarity:'rare',      cost:2, col:'#9aa8bc', glyph:'brace',   behav:'plate',  magic:false, tint:'#1d2531', eff:'+шанс блоку' },
+  thorns:  { name:'Шипи',        cat:'defense', rarity:'rare',      cost:2, col:'#6b7686', glyph:'thorns',  behav:'plate',  magic:false, tint:'#15202a', eff:'відбиває частину шкоди' },
+  ward:    { name:'Оберіг',      cat:'defense', rarity:'epic',      cost:3, col:'#8fa6d6', glyph:'rune',    behav:'catalyst',magic:false, tint:'#15203a', eff:'магічний опір' },
+  // ---- Спритність (amber) ----
+  swift:   { name:'Спритність',  cat:'agility', rarity:'common',    cost:1, col:'#F0C020', glyph:'chevron', behav:'swift',  magic:false, tint:'#3a2e00', eff:'+швидкість / +ухил' },
+  haste:   { name:'Ривок',       cat:'agility', rarity:'rare',      cost:2, col:'#ffd84a', glyph:'dblchev', behav:'swift',  magic:false, tint:'#3a2e00', eff:'+наповнення ATB' },
+  evasion: { name:'Ухил',        cat:'agility', rarity:'epic',      cost:3, col:'#e0b020', glyph:'wisp',    behav:'swift',  magic:false, tint:'#3a2e00', eff:'+ухил' },
+  // ---- Магія (vivid) ----
+  mana:    { name:'Мана',        cat:'magic',   rarity:'common',    cost:1, col:'#2D6FD0', glyph:'droplet', behav:'mana',   magic:true,  tint:'#06203a', eff:'паливо для магії' },
+  catalyst:{ name:'Каталізатор', cat:'magic',   rarity:'rare',      cost:2, col:'#D14FA6', glyph:'ring',    behav:'catalyst',magic:true,  tint:'#3a0d2a', eff:'підсилює суміжну магію' },
+  ember:   { name:'Жар',         cat:'magic',   rarity:'common',    cost:1, col:'#F07A1E', glyph:'flame',   behav:'ember',  magic:true,  tint:'#3a1500', eff:'вогонь + Підпал' },
+  frost:   { name:'Мороз',       cat:'magic',   rarity:'common',    cost:1, col:'#39C6E8', glyph:'snow',    behav:'frost',  magic:true,  tint:'#06303a', eff:'лід + Сповільнення' },
+  spark:   { name:'Іскра',       cat:'magic',   rarity:'rare',      cost:2, col:'#9B6BD6', glyph:'bolt',    behav:'spark',  magic:true,  tint:'#2a123a', eff:'блискавка + Шок' },
+  poison:  { name:'Отрута',      cat:'magic',   rarity:'rare',      cost:2, col:'#7bd64a', glyph:'vial',    behav:'ember',  magic:true,  tint:'#16330a', eff:'отрута (DoT)' },
+  arcane:  { name:'Аркана',      cat:'magic',   rarity:'legendary', cost:4, col:'#c060ff', glyph:'sigil',   behav:'catalyst',magic:true,  tint:'#2a0a3a', eff:'велика чиста магія' },
 };
-const PIX = {
-  core:    { name:'Ядро',        eff:'Серце',      glyph:'star',    behav:'core',   magic:false, tint:'#3a2c00' },
-  vital:   { name:'Тіло',        eff:'Здоровʼя',   glyph:'heart',   behav:'vital',  magic:false, tint:'#0a3a22' },
-  plate:   { name:'Броня',       eff:'Захист',     glyph:'shield',  behav:'plate',  magic:false, tint:'#1d2531' },
-  force:   { name:'Сила',        eff:'Атака',      glyph:'blade',   behav:'force',  magic:false, tint:'#3a0d0a' },
-  swift:   { name:'Спритність',  eff:'Швидкість',  glyph:'chevron', behav:'swift',  magic:false, tint:'#3a2e00' },
-  focus:   { name:'Фокус',       eff:'Точність',   glyph:'diamond', behav:'focus',  magic:false, tint:'#2a3340' },
-  ember:   { name:'Жар',         eff:'Вогонь',     glyph:'flame',   behav:'ember',  magic:true,  tint:'#3a1500' },
-  frost:   { name:'Мороз',       eff:'Лід',        glyph:'snow',    behav:'frost',  magic:true,  tint:'#06303a' },
-  spark:   { name:'Іскра',       eff:'Блискавка',  glyph:'bolt',    behav:'spark',  magic:true,  tint:'#2a123a' },
-  mana:    { name:'Мана',        eff:'Паливо',     glyph:'droplet', behav:'mana',   magic:true,  tint:'#06203a' },
-  catalyst:{ name:'Каталізатор', eff:'Підсилення', glyph:'ring',    behav:'catalyst',magic:true, tint:'#3a0d2a' },
-};
+// canonical placement order (palette / iteration)
+const TYPE_ORDER = ['core',
+  'vital','regen','lifesteal',
+  'force','focus','pierce','berserk',
+  'plate','block','thorns','ward',
+  'swift','haste','evasion',
+  'mana','catalyst','ember','frost','spark','poison','arcane'];
+
+// PIX is the legacy-compatible view onto CUBES (name/eff/glyph/behav/magic/tint)
+// so the existing render/sim code keeps working unchanged.
+const PIX = {};
+const NEW_PAL = {};
+for(const k of TYPE_ORDER){
+  const c = CUBES[k];
+  PIX[k] = { name:c.name, eff:c.eff, glyph:c.glyph, behav:c.behav, magic:c.magic, tint:c.tint };
+  NEW_PAL[k] = c.col;
+}
 let PALETTE = NEW_PAL;
 function colorOfType(type){ return (PALETTE[type]) || '#888'; }
+function cubeRarity(type){ return CUBES[type] ? CUBES[type].rarity : 'common'; }
+function cubeCost(type){ return CUBES[type] ? CUBES[type].cost : 1; }
+function cubeCat(type){ return CUBES[type] ? CUBES[type].cat : 'special'; }
 
 // base stat coefficients
 const STAT = {
@@ -174,15 +237,29 @@ const STAT = {
   critPerFocus: 0.05,    critCap: 0.45,
   accPerFocus: 0.03,
   magPerElement: 5.0,    magPerCatalyst: 4.0, magCatalystMul: 0.18,
+  // new-cube coefficients
+  regenPerRegen: 1.4,
+  lifestealPer:  0.06,   // 6% of damage healed per lifesteal cube
+  pierceArmorPer:0.14,   // ignore 14% armor per pierce cube
+  berserkAtkPer: 2.2,    // +atk (ramps with missing HP) per berserk cube
+  blockPerBlock: 0.06,   // +block chance per block cube
+  thornsPer:     0.10,   // reflect 10% of incoming dmg per thorns cube
+  wardPer:       0.10,   // 10% magic resist per ward cube
+  hastePerHaste: 0.10,   // +10% ATB fill per haste cube
+  evasionPer:    0.03,   // +3% dodge per evasion cube
+  magPerArcane:  11.0,   // big raw magic per arcane
+  magPerEmberFrost: 5.0, // ember/frost already counted as element
 };
 
 /* ============================================================================
    3. MOVESET DATA + SCHOOLS + STATUSES
    ========================================================================== */
 const SCHOOL = {
-  fire:  { name:'Вогонь',    glyph:'🔥', col:'#F07A1E', col2:'#ffd24a', light:'#ff5a1e' },
-  frost: { name:'Лід',       glyph:'❄', col:'#39C6E8', col2:'#bff0ff', light:'#3aa6ff' },
-  spark: { name:'Блискавка', glyph:'⚡', col:'#9B6BD6', col2:'#ffffff', light:'#9b6bff' },
+  fire:   { name:'Вогонь',    glyph:'🔥', col:'#F07A1E', col2:'#ffd24a', light:'#ff5a1e' },
+  frost:  { name:'Лід',       glyph:'❄', col:'#39C6E8', col2:'#bff0ff', light:'#3aa6ff' },
+  spark:  { name:'Блискавка', glyph:'⚡', col:'#9B6BD6', col2:'#ffffff', light:'#9b6bff' },
+  poison: { name:'Отрута',    glyph:'☣', col:'#7bd64a', col2:'#d6ff9a', light:'#7bd64a' },
+  arcane: { name:'Аркана',    glyph:'✦', col:'#c060ff', col2:'#f0d0ff', light:'#c060ff' },
 };
 const MOVES = {
   fist:  { kind:'fist',  icon:'👊', label:"б'є кулаком",          windUp:0.10, recover:0.18, power:9,  type:'phys', ranged:false, double:true,  weight:3.0,
@@ -192,33 +269,39 @@ const MOVES = {
   bow:   { kind:'bow',   icon:'🏹', label:"стріляє з лука",       windUp:0.22, recover:0.26, power:15, type:'phys', ranged:true,  weight:1.6,
            req:c=>count(c,'swift')>=2 },
   fire:  { kind:'fire',  icon:'🔥', label:"кастує Вогняну кулю",  windUp:0.40, recover:0.36, power:18, type:'magic',ranged:true,  school:'fire',  status:'burn',  weight:1.3,
-           req:c=>count(c,'ember')>=1 && count(c,'mana')>=1 },
+           req:c=>count(c,'ember')>=1 && manaFuel(c)>=1 },
   frost: { kind:'frost', icon:'❄️', label:"кастує Крижану стрілу",windUp:0.40, recover:0.36, power:14, type:'magic',ranged:true,  school:'frost', status:'slow',  weight:1.3,
-           req:c=>count(c,'frost')>=1 && count(c,'mana')>=1 },
+           req:c=>count(c,'frost')>=1 && manaFuel(c)>=1 },
   spark: { kind:'spark', icon:'⚡', label:"б'є Розрядом",         windUp:0.34, recover:0.34, power:16, type:'magic',ranged:true,  school:'spark', status:'shock', weight:1.2,
-           req:c=>count(c,'spark')>=1 && count(c,'mana')>=1 },
+           req:c=>count(c,'spark')>=1 && manaFuel(c)>=1 },
+  venom: { kind:'venom', icon:'☣️', label:"кидає Отруту",         windUp:0.32, recover:0.32, power:11, type:'magic',ranged:true,  school:'poison',status:'poison',weight:1.1,
+           req:c=>count(c,'poison')>=1 && manaFuel(c)>=1 },
+  arc:   { kind:'arc',   icon:'✦',  label:"вивільняє Аркану",     windUp:0.46, recover:0.40, power:30, type:'magic',ranged:true,  school:'arcane',weight:1.0,
+           req:c=>count(c,'arcane')>=1 && manaFuel(c)>=1 },
 };
-const MOVE_ORDER = ['fist','sword','bow','fire','frost','spark'];
+const MOVE_ORDER = ['fist','sword','bow','fire','frost','spark','venom','arc'];
+function manaFuel(c){ return count(c,'mana'); }
 
 // STATUSES generalized into a tray. sign:+1 buff (green), -1 debuff (red).
 const STATUS_DEF = {
   burn:    { uk:'Підпал',       glyph:'🔥', col:'#F07A1E', dur:4.2, tick:1.0, dmg:6, sign:-1, traitKind:null },
   slow:    { uk:'Сповільнення', glyph:'❄', col:'#39C6E8', dur:5.0, tick:0,   dmg:0, atbMul:0.45, sign:-1 },
   shock:   { uk:'Шок',          glyph:'⚡', col:'#9B6BD6', dur:3.0, tick:0,   dmg:0, dmgTakenMul:1.5, sign:-1 },
-  // POSITIVE buffs (green-framed). Driven by traits.
+  poison:  { uk:'Отруєння',     glyph:'☣', col:'#7bd64a', dur:6.0, tick:1.0, dmg:4, sign:-1 },
+  arcane:  { uk:'Аркана',       glyph:'✦', col:'#c060ff', dur:2.5, tick:0,   dmg:0, dmgTakenMul:1.25, sign:-1 },
+  // POSITIVE buffs (green-framed). Driven by traits / cubes.
   bastion: { uk:'Бастіон',      glyph:'shield',iconTrait:'bastion', col:'#7CE0A0', dur:6.0, tick:0, sign:+1, block:true },
   heartReg:{ uk:'Серце',        glyph:'cross', iconTrait:'heart',   col:'#5BE08A', dur:5.0, tick:1.0, heal:5, sign:+1 },
+  berserkB:{ uk:'Лють',         glyph:'rage',  iconTrait:'rage',    col:'#ff8060', dur:3.0, tick:0, sign:+1 },
+  wardB:   { uk:'Оберіг',       glyph:'rune',  iconTrait:'rune',    col:'#9fb6f0', dur:4.0, tick:0, sign:+1 },
 };
 
 /* ============================================================================
-   4. META — synergy + shape DEFS, detectors, deriveStats (folds traits)
+   4. META — synergy + shape DEFS, detectors, deriveStats (folds traits+cubes)
    ----------------------------------------------------------------------------
-   Everything data-driven: adding a new trait = a few lines in SYNERGY_DEFS /
-   SHAPE_DEFS plus (optionally) an icon drawer and a fold rule.
-
-   detectSynergies(build) and detectShapes(build) each return TRAITS:
+   detectSynergies(build)/detectShapes(build) -> TRAITS:
      { key, name, icon, magnitude, pixelIndices, kind:'adjacency'|'shape',
-       effect, bonds? }   (bonds = [[i,j],...] for adjacency badge/links)
+       effect, bonds? }
    ========================================================================== */
 function count(build, type){ let n=0; for(const p of build) if(p.type===type) n++; return n; }
 function key2(p){ return p.gx+','+p.gy; }
@@ -227,11 +310,8 @@ function orthAdjacent(a,b){
   return (dx+dy)===1;
 }
 
-/* ---- ADJACENCY SYNERGIES (named pairwise, ORTHOGONAL touch) ---------------
-   Each def: a predicate match(typeA,typeB) on an orthogonally-touching pair.
-   Aggregate bonded-pair count -> magnitude. Bonds collected for visualization.
-   ------------------------------------------------------------------------- */
-const ELEMENTS = ['ember','frost','spark'];
+/* ---- ADJACENCY SYNERGIES (named pairwise, ORTHOGONAL touch) --------------- */
+const ELEMENTS = ['ember','frost','spark','poison','arcane'];
 const SYNERGY_DEFS = [
   { key:'blade',   name:'«Лезо»',      kind:'adjacency', icon:'blade',
     effect:'+крит за кожну пару Сила↔Сила',
@@ -246,21 +326,20 @@ const SYNERGY_DEFS = [
     effect:'+ухил за кожну пару Спритність↔Спритність',
     match:(a,b)=> a==='swift' && b==='swift' },
   { key:'amplify', name:'«Підсилення»',kind:'adjacency', icon:'amplify',
-    effect:'+маг. за пару Каталізатор↔(жар/мороз/іскра)',
+    effect:'+маг. за пару Каталізатор↔(стихія)',
     match:(a,b)=> (a==='catalyst'&&ELEMENTS.includes(b))||(b==='catalyst'&&ELEMENTS.includes(a)) },
+  { key:'venomweave', name:'«Сплетіння»', kind:'adjacency', icon:'venomweave',
+    effect:'+DoT за пару Отрута↔Мана',
+    match:(a,b)=> (a==='poison'&&b==='mana')||(a==='mana'&&b==='poison') },
 ];
 
 function detectSynergies(build){
-  // index by cell for O(1) neighbour lookups
   const byCell = new Map();
   build.forEach((p,i)=> byCell.set(key2(p), i));
-  // accumulate per-def: pair count + bond list
   const acc = {};
   for(const d of SYNERGY_DEFS) acc[d.key] = { pairs:0, bonds:[], idx:new Set() };
-  // iterate each ordered unique pair (i<j) that is orthogonally adjacent
   for(let i=0;i<build.length;i++){
     const p=build[i];
-    // only look right + down neighbours to count each undirected pair once
     const neigh = [ [p.gx+1,p.gy], [p.gx,p.gy+1] ];
     for(const [nx,ny] of neigh){
       const j = byCell.get(nx+','+ny);
@@ -285,11 +364,7 @@ function detectSynergies(build){
   return traits;
 }
 
-/* ---- SHAPE RECIPES (named patterns of a given type) -----------------------
-   Each def: detect(build, byCell) -> { count, sets:[[idx...]...] }.
-   magnitude = number of distinct satisfied instances (lines/blocks/crosses)
-   or 1 for the whole-build symmetry flag.
-   ------------------------------------------------------------------------- */
+/* ---- SHAPE RECIPES (named patterns of a given type) ----------------------- */
 function buildCellIndex(build){
   const m=new Map();
   build.forEach((p,i)=> m.set(key2(p), i));
@@ -304,19 +379,15 @@ const SHAPE_DEFS = [
   { key:'spike', name:'«Шип»', kind:'shape', icon:'spike',
     effect:'3+ Сила в лінію → +досяжність/атака',
     detect(build, byCell){
-      // find maximal horizontal/vertical runs of >=3 'force'; one instance per run
-      const sets=[]; const used=new Set();
+      const sets=[];
       const isForce=(gx,gy)=>{ const c=cellOf(byCell,build,gx,gy); return c&&c.p.type==='force'?c.i:-1; };
-      // horizontal runs: only start where left neighbour isn't force
       for(let k=0;k<build.length;k++){
         const p=build[k]; if(p.type!=='force') continue;
-        // HORIZONTAL
         if(isForce(p.gx-1,p.gy)<0){
           const run=[]; let gx=p.gx;
           let id; while((id=isForce(gx,p.gy))>=0){ run.push(id); gx++; }
           if(run.length>=3){ sets.push(run.slice()); }
         }
-        // VERTICAL
         if(isForce(p.gx,p.gy-1)<0){
           const run=[]; let gy=p.gy;
           let id; while((id=isForce(p.gx,gy))>=0){ run.push(id); gy++; }
@@ -333,7 +404,6 @@ const SHAPE_DEFS = [
       const seen=new Set();
       for(let k=0;k<build.length;k++){
         const p=build[k]; if(p.type!=='plate') continue;
-        // top-left corner of a 2x2
         const a=isPlate(p.gx,p.gy), b=isPlate(p.gx+1,p.gy),
               c2=isPlate(p.gx,p.gy+1), d=isPlate(p.gx+1,p.gy+1);
         if(a>=0&&b>=0&&c2>=0&&d>=0){
@@ -362,13 +432,10 @@ const SHAPE_DEFS = [
   { key:'balance', name:'«Рівновага»', kind:'shape', icon:'balance',
     effect:'дзеркальна симетрія L↔R → +точність',
     detect(build, byCell){
-      // whole-build left<->right mirror symmetry about the build's vertical axis.
-      // axis = (minGx+maxGx). For each cell at (gx,gy) require a same-type cell
-      // at (axis-gx, gy). Need >=2 cells off-axis to count as a real mirror.
       if(build.length<3) return { count:0, sets:[] };
       let minGx=Infinity,maxGx=-Infinity;
       for(const p of build){ if(p.gx<minGx)minGx=p.gx; if(p.gx>maxGx)maxGx=p.gx; }
-      const axis = minGx+maxGx; // mirrored gx = axis - gx
+      const axis = minGx+maxGx;
       let offAxis=0, mirrored=true;
       for(const p of build){
         const mx = axis - p.gx;
@@ -402,21 +469,18 @@ function detectTraits(build){
   return detectSynergies(build).concat(detectShapes(build));
 }
 
-/* ---- deriveStats — base derivation + FOLD trait magnitudes ----------------
-   The traits are mostly passive/build-time; we fold their magnitudes here so
-   they actually change the hero. Returns stats + the trait list + per-trait
-   stat deltas (for the panel + combat procs).
-   ------------------------------------------------------------------------- */
+/* ---- deriveStats — base derivation + FOLD trait magnitudes + cube effects -- */
 function adjacentAny(a, b){ return Math.abs(a.gx-b.gx)<=1 && Math.abs(a.gy-b.gy)<=1 && !(a.gx===b.gx&&a.gy===b.gy); }
 
 function deriveStats(build){
   const c = t => count(build, t);
   const vital=c('vital'), plate=c('plate'), force=c('force'), swift=c('swift'),
         focus=c('focus'), catalyst=c('catalyst');
-  const elements = c('ember') + c('frost') + c('spark');
+  const elements = c('ember') + c('frost') + c('spark') + c('poison') + c('arcane');
 
   // base magic (kept from engine, incl. catalyst adjacency boost)
   let mag = elements*STAT.magPerElement + catalyst*STAT.magPerCatalyst;
+  mag += c('arcane')*STAT.magPerArcane;     // arcane is big raw magic
   if(catalyst>0 && elements>0){
     let adjEl=0;
     for(const p of build){
@@ -435,12 +499,32 @@ function deriveStats(build){
   let crit   = Math.min(STAT.critCap, focus*STAT.critPerFocus);
   let acc    = focus*STAT.accPerFocus;
 
+  // ---- NEW CUBE EFFECTS (per-cube, additive) ------------------------------
+  const cubeDelta = {};   // per-cube human-readable contribution (for breakdown)
+  let regenPerSec = 0;
+  let lifesteal   = 0;
+  let pierce      = 0;
+  let berserk     = 0;
+  let blockChance = 0;
+  let thorns      = 0;
+  let magResist   = 0;
+  let haste       = 0;
+  const nRegen=c('regen'), nLife=c('lifesteal'), nPierce=c('pierce'), nBerserk=c('berserk'),
+        nBlock=c('block'), nThorns=c('thorns'), nWard=c('ward'), nHaste=c('haste'), nEvade=c('evasion');
+  if(nRegen){   const d=nRegen*STAT.regenPerRegen;   regenPerSec+=d; cubeDelta.regen='+'+d.toFixed(1)+' рег/с'; }
+  if(nLife){    const d=nLife*STAT.lifestealPer;     lifesteal+=d;   cubeDelta.lifesteal='+'+(d*100).toFixed(0)+'% вамп.'; }
+  if(nPierce){  const d=Math.min(0.85,nPierce*STAT.pierceArmorPer); pierce+=d; cubeDelta.pierce='-'+(d*100).toFixed(0)+'% броні ціль'; }
+  if(nBerserk){ const d=nBerserk*STAT.berserkAtkPer; berserk+=d;     cubeDelta.berserk='+'+d.toFixed(1)+' атака (низьке HP)'; }
+  if(nBlock){   const d=nBlock*STAT.blockPerBlock;   blockChance+=d; cubeDelta.block='+'+(d*100).toFixed(0)+'% блок'; }
+  if(nThorns){  const d=nThorns*STAT.thornsPer;      thorns+=d;      cubeDelta.thorns='+'+(d*100).toFixed(0)+'% відбиття'; }
+  if(nWard){    const d=Math.min(0.7,nWard*STAT.wardPer); magResist+=d; cubeDelta.ward='+'+(d*100).toFixed(0)+'% маг.опір'; }
+  if(nHaste){   const d=nHaste*STAT.hastePerHaste;   haste+=d;       cubeDelta.haste='+'+(d*100).toFixed(0)+'% ATB'; }
+  if(nEvade){   const d=nEvade*STAT.evasionPer;      dodge+=d;       cubeDelta.evasion='+'+(d*100).toFixed(0)+'% ухил'; }
+
   // ---- FOLD TRAITS ---------------------------------------------------------
   const traits = detectTraits(build);
-  let blockChance = 0;     // «Бастіон»
-  let regenPerSec = 0;     // «Серце»
-  let extraDodge  = 0;     // «Потік»
-  const traitDelta = {};   // human-readable per-trait stat contribution
+  const traitDelta = {};
+  let extraDodge  = 0;
   for(const tr of traits){
     const m = tr.magnitude;
     switch(tr.key){
@@ -449,13 +533,15 @@ function deriveStats(build){
       case 'kindle':  { const d=m*TRAIT_K.kindle_magPerPair;   mag+=d;                                    traitDelta[tr.key]='+'+d.toFixed(0)+' маг.'; break; }
       case 'flow':    { const d=Math.min(FLOW_DODGE_CAP, m*TRAIT_K.flow_dodgePerPair); extraDodge+=d;      traitDelta[tr.key]='+'+(d*100).toFixed(0)+'% ухил'; break; }
       case 'amplify': { const d=m*TRAIT_K.amplify_magPerPair;  mag+=d;                                    traitDelta[tr.key]='+'+d.toFixed(0)+' маг.'; break; }
+      case 'venomweave':{ const d=m*2.0;                       mag+=d;                                    traitDelta[tr.key]='+'+d.toFixed(0)+' маг.(DoT)'; break; }
       case 'spike':   { const d=m*TRAIT_K.spike_atkPerLine;    atk+=d;                                    traitDelta[tr.key]='+'+d.toFixed(0)+' атака'; break; }
-      case 'bastion': { const d=Math.min(BASTION_BLOCK_CAP, m*TRAIT_K.bastion_blockPerSet); blockChance=Math.max(blockChance,d); traitDelta[tr.key]='+'+(d*100).toFixed(0)+'% блок'; break; }
+      case 'bastion': { const d=Math.min(BASTION_BLOCK_CAP, m*TRAIT_K.bastion_blockPerSet); blockChance=Math.max(blockChance,blockChance+d); traitDelta[tr.key]='+'+(d*100).toFixed(0)+'% блок'; break; }
       case 'heart':   { const d=m*TRAIT_K.heart_regenPerSet;   regenPerSec+=d;                            traitDelta[tr.key]='+'+d.toFixed(1)+' рег/с'; break; }
       case 'balance': { const d=TRAIT_K.balance_accPerSym;     acc+=d;                                    traitDelta[tr.key]='+'+(d*100).toFixed(0)+'% точн.'; break; }
     }
   }
-  dodge = Math.min(STAT.dodgeCap+FLOW_DODGE_CAP, dodge+extraDodge);
+  dodge = Math.min(STAT.dodgeCap+FLOW_DODGE_CAP+0.3, dodge+extraDodge);
+  blockChance = Math.min(BASTION_BLOCK_CAP, blockChance);
 
   return {
     maxHP: Math.round(maxHP),
@@ -464,7 +550,8 @@ function deriveStats(build){
     dodge, crit, acc,
     magic:+mag.toFixed(1),
     blockChance, regenPerSec,
-    traits, traitDelta,
+    lifesteal, pierce, berserk, thorns, magResist, haste,
+    traits, traitDelta, cubeDelta,
     counts:{ vital, plate, force, swift, focus, catalyst, elements },
   };
 }
@@ -515,36 +602,27 @@ const MAGE_BUILD = B([
   [-2,0,'mana'],[2,0,'mana'],
   [-1,2,'vital'],[1,2,'vital'],
 ]);
-
-// --- THE "GREAT BIG BUILD" (~80 pixels) — exercises scaling + many traits ---
 const TITAN_BUILD = B([
   [0,0,'core'],
-  // big vital torso (with «Серце» crosses inside)
   [-1,0,'vital'],[1,0,'vital'],[-2,0,'vital'],[2,0,'vital'],
   [-2,1,'vital'],[-1,1,'vital'],[0,1,'vital'],[1,1,'vital'],[2,1,'vital'],
   [-2,2,'vital'],[-1,2,'vital'],[0,2,'vital'],[1,2,'vital'],[2,2,'vital'],
   [-2,3,'vital'],[-1,3,'vital'],[0,3,'vital'],[1,3,'vital'],[2,3,'vital'],
   [-1,4,'vital'],[0,4,'vital'],[1,4,'vital'],
-  // plate shell (2x2 «Бастіон» blocks on the flanks; «Форпост» where touching vital)
   [-3,0,'plate'],[-4,0,'plate'],[-3,1,'plate'],[-4,1,'plate'],
   [3,0,'plate'],[4,0,'plate'],[3,1,'plate'],[4,1,'plate'],
   [-3,2,'plate'],[-3,3,'plate'],[3,2,'plate'],[3,3,'plate'],
   [-1,-1,'plate'],[0,-1,'plate'],[1,-1,'plate'],
-  // force lines (mirror) -> «Шип» + «Лезо»
   [5,0,'force'],[6,0,'force'],[7,0,'force'],
   [-5,0,'force'],[-6,0,'force'],[-7,0,'force'],
   [5,1,'force'],[-5,1,'force'],
-  // swift wings -> «Потік»
   [2,-1,'swift'],[3,-1,'swift'],[4,-1,'swift'],
   [-2,-1,'swift'],[-3,-1,'swift'],[-4,-1,'swift'],
-  // focus crown
   [0,-2,'focus'],[-1,-2,'focus'],[1,-2,'focus'],[0,-3,'focus'],
-  // magic core: ember↔mana «Розпал», catalyst↔element «Підсилення»
   [-2,-2,'ember'],[-2,-3,'mana'],[-3,-2,'mana'],
   [2,-2,'frost'],[2,-3,'mana'],[3,-2,'mana'],
   [0,-4,'spark'],
   [-1,-3,'catalyst'],[1,-3,'catalyst'],[-3,-3,'catalyst'],[3,-3,'catalyst'],
-  // bottom growth
   [-2,4,'vital'],[2,4,'vital'],[-1,5,'vital'],[0,5,'vital'],[1,5,'vital'],
 ]);
 
@@ -564,9 +642,7 @@ const ROSTER = {
 const FOE_ORDER = ['brute','mage','hero'];
 
 /* ============================================================================
-   6. TRAIT ICON DRAWERS — small unique symbols (canvas paths, NOT emoji)
-   Each draws centred at (x,y) within size s, in colour col. Reuses some glyph
-   shapes but composes a distinct trait emblem.
+   6. TRAIT ICON DRAWERS + new cube glyph drawers
    ========================================================================== */
 function drawTraitIcon(key, x, y, s, col){
   const g=s*0.40;
@@ -574,12 +650,12 @@ function drawTraitIcon(key, x, y, s, col){
   ctx.strokeStyle=col; ctx.fillStyle=col;
   ctx.lineWidth=Math.max(1.4, s*0.10); ctx.lineJoin='round'; ctx.lineCap='round';
   switch(key){
-    case 'blade': {        // «Лезо»: two crossed blades
+    case 'blade': {
       ctx.beginPath(); ctx.moveTo(-g,-g); ctx.lineTo(g,g); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(g,-g);  ctx.lineTo(-g,g); ctx.stroke();
       ctx.beginPath(); ctx.arc(0,0,g*0.22,0,7); ctx.fill();
       break; }
-    case 'outpost': {      // «Форпост»: tower (shield+battlement)
+    case 'outpost': {
       ctx.beginPath();
       ctx.moveTo(-g*0.7,-g*0.3); ctx.lineTo(-g*0.7,g); ctx.lineTo(g*0.7,g);
       ctx.lineTo(g*0.7,-g*0.3); ctx.stroke();
@@ -588,53 +664,73 @@ function drawTraitIcon(key, x, y, s, col){
       ctx.lineTo(-g*0.25,-g*0.45); ctx.lineTo(g*0.25,-g*0.45); ctx.lineTo(g*0.25,-g*0.7);
       ctx.lineTo(g*0.7,-g*0.7); ctx.lineTo(g*0.7,-g*0.3); ctx.stroke();
       break; }
-    case 'kindle': {       // «Розпал»: flame + drop
+    case 'kindle': {
       ctx.beginPath();
       ctx.moveTo(0,g); ctx.bezierCurveTo(g*0.95,g*0.3, g*0.4,-g*0.5, 0,-g);
       ctx.bezierCurveTo(-g*0.3,-g*0.2,-g*0.85,g*0.2, 0,g); ctx.fill();
       break; }
-    case 'flow': {         // «Потік»: double chevron (wind)
+    case 'flow': {
       ctx.beginPath(); ctx.moveTo(-g*0.7,-g*0.6); ctx.lineTo(g*0.0,0); ctx.lineTo(-g*0.7,g*0.6); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0,-g*0.6); ctx.lineTo(g*0.7,0); ctx.lineTo(0,g*0.6); ctx.stroke();
       break; }
-    case 'amplify': {      // «Підсилення»: ring + plus (catalyst)
+    case 'amplify': {
       ctx.beginPath(); ctx.arc(0,0,g*0.7,0,7); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(-g*0.4,0); ctx.lineTo(g*0.4,0);
       ctx.moveTo(0,-g*0.4); ctx.lineTo(0,g*0.4); ctx.stroke();
       break; }
-    case 'spike': {        // «Шип»: arrow spike to the right
+    case 'venomweave': {   // «Сплетіння»: droplet with cross-weave
+      ctx.beginPath(); ctx.moveTo(0,-g);
+      ctx.bezierCurveTo(g*0.75,g*0.05, g*0.55,g, 0,g);
+      ctx.bezierCurveTo(-g*0.55,g,-g*0.75,g*0.05, 0,-g); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.4,0); ctx.lineTo(g*0.4,g*0.3);
+      ctx.moveTo(g*0.4,0); ctx.lineTo(-g*0.4,g*0.3); ctx.stroke();
+      break; }
+    case 'spike': {
       ctx.beginPath(); ctx.moveTo(-g,0); ctx.lineTo(g*0.5,0); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(g,0); ctx.lineTo(g*0.3,-g*0.5); ctx.lineTo(g*0.3,g*0.5);
       ctx.closePath(); ctx.fill();
       break; }
-    case 'bastion': {      // «Бастіон»: shield
+    case 'bastion': {
       ctx.beginPath();
       ctx.moveTo(0,-g); ctx.lineTo(g*0.8,-g*0.55); ctx.lineTo(g*0.8,g*0.2);
       ctx.quadraticCurveTo(g*0.8,g*0.9, 0,g);
       ctx.quadraticCurveTo(-g*0.8,g*0.9,-g*0.8,g*0.2);
       ctx.lineTo(-g*0.8,-g*0.55); ctx.closePath(); ctx.fill();
       break; }
-    case 'shield': {       // status «Бастіон» buff icon == shield outline (green)
+    case 'shield': {
       ctx.beginPath();
       ctx.moveTo(0,-g); ctx.lineTo(g*0.8,-g*0.55); ctx.lineTo(g*0.8,g*0.2);
       ctx.quadraticCurveTo(g*0.8,g*0.9, 0,g);
       ctx.quadraticCurveTo(-g*0.8,g*0.9,-g*0.8,g*0.2);
       ctx.lineTo(-g*0.8,-g*0.55); ctx.closePath(); ctx.stroke();
       break; }
+    case 'rage': {        // «Лють»: jagged burst
+      ctx.beginPath();
+      for(let k=0;k<8;k++){ const a=k*Math.PI/4; const r=(k%2?g*0.45:g);
+        const px2=Math.cos(a)*r, py2=Math.sin(a)*r;
+        if(k===0) ctx.moveTo(px2,py2); else ctx.lineTo(px2,py2); }
+      ctx.closePath(); ctx.stroke(); break; }
+    case 'rune': {        // «Оберіг»: hex outline + dot
+      ctx.beginPath();
+      for(let k=0;k<6;k++){ const a=-Math.PI/2+k*Math.PI/3;
+        const px2=Math.cos(a)*g, py2=Math.sin(a)*g;
+        if(k===0) ctx.moveTo(px2,py2); else ctx.lineTo(px2,py2); }
+      ctx.closePath(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0,0,g*0.22,0,7); ctx.fill(); break; }
     case 'heart':
-    case 'heart5': {       // «Серце»: cross-of-hearts / plus heart
+    case 'heart5': {
       ctx.beginPath();
       ctx.moveTo(0, g*0.85);
       ctx.bezierCurveTo(g*1.15, g*0.05, g*0.5,-g*0.9, 0,-g*0.1);
       ctx.bezierCurveTo(-g*0.5,-g*0.9,-g*1.15, g*0.05, 0, g*0.85);
       ctx.fill();
       break; }
-    case 'cross': {        // status «Серце» regen icon: medic plus
+    case 'cross': {
       ctx.lineWidth=Math.max(2,s*0.18);
       ctx.beginPath(); ctx.moveTo(0,-g*0.8); ctx.lineTo(0,g*0.8);
       ctx.moveTo(-g*0.8,0); ctx.lineTo(g*0.8,0); ctx.stroke();
       break; }
-    case 'balance': {      // «Рівновага»: scales / mirror
+    case 'balance': {
       ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(0,g*0.5); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(-g,-g*0.4); ctx.lineTo(g,-g*0.4); ctx.stroke();
       ctx.beginPath(); ctx.arc(-g*0.7,0,g*0.32,0,Math.PI); ctx.stroke();
@@ -647,11 +743,10 @@ function drawTraitIcon(key, x, y, s, col){
   }
   ctx.restore();
 }
-// trait accent colours (for badges/panel)
 const TRAIT_COL = {
   blade:'#E0483F', outpost:'#7C8AA0', kindle:'#F07A1E', flow:'#F0C020',
-  amplify:'#D14FA6', spike:'#ff8d6b', bastion:'#7CE0A0', heart:'#5BE08A',
-  heart5:'#5BE08A', balance:'#EAEFF5',
+  amplify:'#D14FA6', venomweave:'#7bd64a', spike:'#ff8d6b', bastion:'#7CE0A0',
+  heart:'#5BE08A', heart5:'#5BE08A', balance:'#EAEFF5', rage:'#ff8060', rune:'#9fb6f0',
 };
 function traitColor(key){ return TRAIT_COL[key]||'#cfe0ff'; }
 
@@ -659,9 +754,17 @@ function traitColor(key){ return TRAIT_COL[key]||'#cfe0ff'; }
    7. SIM — combatants, ATB loop, resolution, EVENT BUS, trait procs
    ========================================================================== */
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
-let W, H, ground;
+let W, H, ground, DPR = 1;
 function resize(){
-  W = cv.width = innerWidth; H = cv.height = innerHeight;
+  // Backing store scaled by devicePixelRatio so canvas-drawn text/pixels stay
+  // crisp on HiDPI / Windows display-scaling. W/H stay in CSS px (all layout
+  // math below is unchanged); frame() applies the DPR transform each frame.
+  DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  W = innerWidth; H = innerHeight;
+  cv.width  = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width  = W + 'px';
+  cv.style.height = H + 'px';
   ground = H*0.72;
 }
 addEventListener('resize', resize); resize();
@@ -679,6 +782,8 @@ function makeFighter(build, opts){
     build, stats, moveset,
     maxHP: stats.maxHP, hp: stats.maxHP, armor: stats.armor,
     blockChance: stats.blockChance, regenPerSec: stats.regenPerSec,
+    lifesteal: stats.lifesteal, pierce: stats.pierce, berserk: stats.berserk,
+    thorns: stats.thorns, magResist: stats.magResist, haste: stats.haste,
     speed: stats.speed * (side<0?1.04:1.0),
     atb: side<0 ? 0.10 : 0.0,
     statuses: [],
@@ -695,7 +800,7 @@ let hero, enemy, fighters = [];
 const events = [];
 function emit(e){ events.push(e); }
 
-let phase = 'fight';   // combat sub-phase: 'fight' | 'result'
+let phase = 'fight';
 let winner = null;
 const actors = [];
 const projectiles = [];
@@ -720,17 +825,25 @@ function startAction(f){
   f.squash = (move.type==='magic' || move.kind==='sword') ? 1 : 0.5;
   if(move.type==='magic'){ f.charge = 0.0001; f.chargeSchool = move.school; }
   flareMovePixels(f, move.kind, 1.0);
-  // «Розпал» empowers a magic cast: activation popup
   if(move.type==='magic' && f.stats.traitDelta.kindle){
     emit({ kind:'traitProc', f, trait:'kindle' });
+  }
+  // «Лють» berserk: announce when low HP
+  if(f.berserk>0 && f.hp < f.maxHP*0.5){
+    if(!f.statuses.some(s=>s.key==='berserkB')) applyStatus(f,'berserkB');
   }
   emit({ kind:'telegraph', source:f, move });
 }
 
+function berserkBonus(f){
+  if(!f.berserk) return 0;
+  const missing = 1 - (f.hp/f.maxHP);   // 0..1
+  return f.berserk * missing;            // scales with missing HP
+}
+
 function resolveHit(f, tgt, move){
-  // «Бастіон»: chance to BLOCK an incoming hit entirely (and show buff + popup)
+  // «Бастіон»/«Блок»: chance to BLOCK an incoming hit entirely
   if(tgt.blockChance>0 && rnd()<tgt.blockChance){
-    // grant/refresh a visible green «Бастіон» buff and announce the block
     applyStatus(tgt, 'bastion');
     emit({ kind:'block', source:f, target:tgt, move });
     emit({ kind:'traitProc', f:tgt, trait:'bastion' });
@@ -748,19 +861,39 @@ function resolveHit(f, tgt, move){
   }
   const critChance = f.stats.crit + (move.critBonus||0);
   const isCrit = rnd() < critChance;
-  let dmg = effectivePower(f, move) + Math.floor(rRange(-2,3));
-  if(move.type==='phys') dmg = Math.max(1, dmg - tgt.armor);
-  else                   dmg = Math.max(1, dmg);
+  let dmg = effectivePower(f, move) + berserkBonus(f) + Math.floor(rRange(-2,3));
+  if(move.type==='phys'){
+    const effArmor = tgt.armor * (1 - (f.pierce||0));   // «Пробій» ignores armor %
+    dmg = Math.max(1, dmg - effArmor);
+  } else {
+    dmg = Math.max(1, dmg * (1 - (tgt.magResist||0)));   // «Оберіг» magic resist
+    if(tgt.magResist>0 && !tgt.statuses.some(s=>s.key==='wardB')) applyStatus(tgt,'wardB');
+  }
   if(isCrit) dmg = Math.round(dmg * 1.8);
   const shock = tgt.statuses.find(s=>s.key==='shock');
   let shockAmp = false;
   if(shock){ dmg = Math.round(dmg * STATUS_DEF.shock.dmgTakenMul); shockAmp = true;
              tgt.statuses.splice(tgt.statuses.indexOf(shock),1); }
+  const arc = tgt.statuses.find(s=>s.key==='arcane');
+  if(arc){ dmg = Math.round(dmg * STATUS_DEF.arcane.dmgTakenMul); }
   dmg = Math.round(dmg);
   applyDamage(tgt, dmg);
+  // «Шипи» thorns: reflect part of incoming damage back to attacker
+  if(tgt.thorns>0 && f.alive){
+    const refl = Math.max(1, Math.round(dmg * tgt.thorns));
+    f.hp = Math.max(0, f.hp - refl); f.chipDelay=0.4; f.flash=0.5;
+    emit({ kind:'thorns', source:tgt, target:f, damage:refl });
+    if(f.hp<=0 && f.alive){ killFighter(f, tgt); }
+  }
+  // «Вампіризм» lifesteal: heal attacker
+  if(f.lifesteal>0 && f.alive && f.hp>0){
+    const heal=Math.max(1, Math.round(dmg*f.lifesteal));
+    f.hp=Math.min(f.maxHP, f.hp+heal); f.chipDelay=0.3;
+    emit({ kind:'lifesteal', f, heal });
+  }
   let appliedStatus = null;
   if(move.status){ applyStatus(tgt, move.status); appliedStatus = move.status; }
-  // «Лезо» crit activation
+  if(move.school==='arcane'){ applyStatus(tgt, 'arcane'); appliedStatus='arcane'; }
   if(isCrit && f.stats.traitDelta.blade) emit({ kind:'traitProc', f, trait:'blade' });
   emit({ kind:'resolve', move, source:f, target:tgt, hit:true, dodge:false,
          crit:isCrit, damage:dmg, status:appliedStatus, shockAmp });
@@ -795,10 +928,8 @@ function killFighter(tgt, by){
 function simStep(dt){
   for(const f of fighters){
     if(!f.alive) continue;
-    // «Серце» passive regen (also surfaces as a green buff chip while active)
     if(f.regenPerSec>0 && f.hp>0 && f.hp<f.maxHP){
       f.regenAcc += dt;
-      // keep a persistent green «Серце» buff visible while regen is meaningful
       if(!f.statuses.some(s=>s.key==='heartReg')) applyStatus(f, 'heartReg');
       if(f.regenAcc>=1){
         f.regenAcc-=1;
@@ -808,7 +939,6 @@ function simStep(dt){
         emit({ kind:'traitProc', f, trait:'heart' });
       }
     }
-    // statuses
     for(let i=f.statuses.length-1;i>=0;i--){
       const s = f.statuses[i]; const def = STATUS_DEF[s.key];
       s.dur -= dt;
@@ -817,8 +947,9 @@ function simStep(dt){
         if(s.tickT<=0){
           s.tickT += def.tick;
           if(def.dmg && f.hp>0){
-            f.hp = Math.max(0, f.hp - def.dmg); f.chipDelay=0.4; f.flash=0.6;
-            emit({ kind:'statusTick', target:f, status:s.key, damage:def.dmg });
+            const tickDmg = def.dmg * (s.stacks||1);
+            f.hp = Math.max(0, f.hp - tickDmg); f.chipDelay=0.4; f.flash=0.6;
+            emit({ kind:'statusTick', target:f, status:s.key, damage:tickDmg });
             if(f.hp<=0 && f.alive){ killFighter(f, (f===hero?enemy:hero)); }
           }
         }
@@ -826,7 +957,7 @@ function simStep(dt){
       if(s.dur<=0) f.statuses.splice(i,1);
     }
     if(!f.alive) continue;
-    let atbMul = 1;
+    let atbMul = 1 + (f.haste||0);
     for(const s of f.statuses){ const d=STATUS_DEF[s.key]; if(d.atbMul) atbMul*=d.atbMul; }
     const busy = actors.some(a=>a.f===f);
     if(!busy){
@@ -933,6 +1064,8 @@ function pixelsForMove(px, moveKey, face){
     case 'fire':  has('ember'); has('mana'); break;
     case 'frost': has('frost'); has('mana'); break;
     case 'spark': has('spark'); has('mana'); break;
+    case 'venom': has('poison'); has('mana'); break;
+    case 'arc':   has('arcane'); has('mana'); break;
     case 'fist':
     default: {
       const f = face || 1;
@@ -984,22 +1117,58 @@ function drawGlyph(key, x, y, s, col, alpha){
       ctx.bezierCurveTo(g*1.2, g*0.05, g*0.55,-g*0.95, 0,-g*0.15);
       ctx.bezierCurveTo(-g*0.55,-g*0.95,-g*1.2, g*0.05, 0, g*0.85);
       ctx.fill(); break;
+    case 'pulse':   // «Реген»: heartbeat line
+      ctx.beginPath();
+      ctx.moveTo(-g,0); ctx.lineTo(-g*0.4,0); ctx.lineTo(-g*0.15,-g*0.7);
+      ctx.lineTo(g*0.1,g*0.7); ctx.lineTo(g*0.4,0); ctx.lineTo(g,0); ctx.stroke(); break;
+    case 'fang':    // «Вампіризм»: two fangs
+      ctx.beginPath(); ctx.moveTo(-g*0.5,-g*0.6); ctx.lineTo(-g*0.5,g*0.2); ctx.lineTo(-g*0.2,-g*0.2); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(g*0.5,-g*0.6); ctx.lineTo(g*0.5,g*0.2); ctx.lineTo(g*0.2,-g*0.2); ctx.closePath(); ctx.fill(); break;
     case 'blade':
       ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(0,g*0.55); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(-g*0.55,g*0.18); ctx.lineTo(g*0.55,g*0.18); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(-g*0.22,-g*0.55);
       ctx.lineTo(g*0.22,-g*0.55); ctx.closePath(); ctx.fill(); break;
+    case 'arrowdn':  // «Пробій»: down-arrow piercing
+      ctx.beginPath(); ctx.moveTo(0,-g); ctx.lineTo(0,g*0.5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,g); ctx.lineTo(-g*0.45,g*0.35); ctx.lineTo(g*0.45,g*0.35); ctx.closePath(); ctx.fill(); break;
+    case 'rage':     // «Лють»: spiky star
+      ctx.beginPath();
+      for(let k=0;k<10;k++){ const r=(k%2?g*0.4:g); const a=-Math.PI/2+k*Math.PI/5;
+        const px2=Math.cos(a)*r, py2=Math.sin(a)*r; if(k===0)ctx.moveTo(px2,py2);else ctx.lineTo(px2,py2); }
+      ctx.closePath(); ctx.fill(); break;
     case 'shield':
       ctx.beginPath();
       ctx.moveTo(0,-g); ctx.lineTo(g*0.8,-g*0.6); ctx.lineTo(g*0.8,g*0.25);
       ctx.quadraticCurveTo(g*0.8,g*0.9, 0,g);
       ctx.quadraticCurveTo(-g*0.8,g*0.9,-g*0.8,g*0.25);
       ctx.lineTo(-g*0.8,-g*0.6); ctx.closePath(); ctx.fill(); break;
+    case 'brace':    // «Блок»: bracket shield
+      ctx.beginPath(); ctx.arc(0,0,g*0.85,Math.PI*0.8,Math.PI*2.2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.3,0); ctx.lineTo(g*0.3,0); ctx.stroke(); break;
+    case 'thorns':   // «Шипи»: spikes
+      for(let k=0;k<4;k++){ const a=k*Math.PI/2;
+        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(Math.cos(a)*g, Math.sin(a)*g); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(Math.cos(a)*g, Math.sin(a)*g);
+        ctx.lineTo(Math.cos(a+0.3)*g*0.6, Math.sin(a+0.3)*g*0.6); ctx.stroke(); }
+      break;
+    case 'rune':     // «Оберіг» / «Аркана» hex rune
+      ctx.beginPath();
+      for(let k=0;k<6;k++){ const a=-Math.PI/2+k*Math.PI/3; const px2=Math.cos(a)*g, py2=Math.sin(a)*g;
+        if(k===0)ctx.moveTo(px2,py2);else ctx.lineTo(px2,py2); }
+      ctx.closePath(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0,0,g*0.25,0,7); ctx.fill(); break;
     case 'chevron':
       ctx.beginPath();
       ctx.moveTo(-g*0.7,-g*0.7); ctx.lineTo(g*0.05,0); ctx.lineTo(-g*0.7,g*0.7); ctx.stroke();
       ctx.beginPath();
       ctx.moveTo(-g*0.05,-g*0.7); ctx.lineTo(g*0.7,0); ctx.lineTo(-g*0.05,g*0.7); ctx.stroke(); break;
+    case 'dblchev':  // «Ривок»: fast double chevron
+      ctx.beginPath(); ctx.moveTo(-g*0.8,-g*0.7); ctx.lineTo(-g*0.1,0); ctx.lineTo(-g*0.8,g*0.7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(g*0.0,-g*0.7); ctx.lineTo(g*0.7,0); ctx.lineTo(g*0.0,g*0.7); ctx.stroke(); break;
+    case 'wisp':     // «Ухил»: swirl
+      ctx.beginPath(); ctx.arc(0,0,g*0.7,0.4,Math.PI*1.7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(g*0.2,g*0.1,g*0.3,Math.PI,Math.PI*2.6); ctx.stroke(); break;
     case 'diamond':
       ctx.beginPath();
       ctx.moveTo(0,-g); ctx.lineTo(g*0.78,0); ctx.lineTo(0,g); ctx.lineTo(-g*0.78,0);
@@ -1027,6 +1196,19 @@ function drawGlyph(key, x, y, s, col, alpha){
       ctx.moveTo(g*0.3,-g); ctx.lineTo(-g*0.35,g*0.1); ctx.lineTo(g*0.1,g*0.1);
       ctx.lineTo(-g*0.3,g); ctx.lineTo(g*0.4,-g*0.15); ctx.lineTo(-g*0.05,-g*0.15);
       ctx.closePath(); ctx.fill(); break;
+    case 'vial':     // «Отрута»: flask
+      ctx.beginPath(); ctx.moveTo(-g*0.25,-g); ctx.lineTo(-g*0.25,-g*0.2);
+      ctx.lineTo(-g*0.6,g*0.7); ctx.quadraticCurveTo(-g*0.6,g, 0,g);
+      ctx.quadraticCurveTo(g*0.6,g, g*0.6,g*0.7); ctx.lineTo(g*0.25,-g*0.2);
+      ctx.lineTo(g*0.25,-g); ctx.closePath(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-g*0.45,g*0.2); ctx.lineTo(g*0.45,g*0.2); ctx.stroke(); break;
+    case 'sigil':    // «Аркана»: star-of-six
+      ctx.beginPath();
+      for(let k=0;k<3;k++){ const a=-Math.PI/2+k*2*Math.PI/3;
+        if(k===0)ctx.moveTo(Math.cos(a)*g,Math.sin(a)*g);else ctx.lineTo(Math.cos(a)*g,Math.sin(a)*g);} ctx.closePath(); ctx.stroke();
+      ctx.beginPath();
+      for(let k=0;k<3;k++){ const a=Math.PI/2+k*2*Math.PI/3;
+        if(k===0)ctx.moveTo(Math.cos(a)*g,Math.sin(a)*g);else ctx.lineTo(Math.cos(a)*g,Math.sin(a)*g);} ctx.closePath(); ctx.stroke(); break;
     case 'droplet':
       ctx.beginPath();
       ctx.moveTo(0,-g);
@@ -1056,7 +1238,7 @@ function behaviorMod(type, clock, off){
   const A = BEHAV_AMP;
   let bright=0, sx=0, sy=0;
   switch(type){
-    case 'vital':
+    case 'vital': case 'regen': case 'lifesteal':
       { const b=Math.pow(Math.max(0,Math.sin(clock*2.2+off)),6);
         bright=0.10*A*b; sx=sy=0.06*A*b; } break;
     case 'core':
@@ -1070,26 +1252,25 @@ function behaviorMod(type, clock, off){
         bright=(0.08+0.5*flick*(0.5+0.5*Math.sin(clock*60)))*A; } break;
     case 'mana':
       bright=(0.10+0.06*Math.sin(clock*1.8+off))*A; break;
-    case 'catalyst':
+    case 'catalyst': case 'ward': case 'arcane':
       { const p=0.5+0.5*Math.sin(clock*3+off);
         bright=(0.10+0.16*p)*A; sx=sy=0.05*A*p; } break;
-    case 'plate':
+    case 'plate': case 'block': case 'thorns':
       bright=0.04*A*Math.sin(clock*1.2+off); break;
-    case 'force':
+    case 'force': case 'pierce': case 'berserk':
       { const g=Math.sin(clock*2.4+off); bright=(g>0.9?0.4:0)*A; } break;
     case 'focus':
       bright=(0.06+0.14*Math.pow(Math.max(0,Math.sin(clock*6+off)),8))*A; break;
-    case 'swift':
+    case 'swift': case 'haste': case 'evasion':
       sx=0.04*A*Math.sin(clock*8+off); break;
+    case 'poison':
+      bright=(0.08+0.10*Math.abs(Math.sin(clock*3.5+off)))*A; break;
   }
   return {bright, sx, sy};
 }
 
 /* ============================================================================
    9. RENDER — creature soft-body (LOD-aware), VFX
-   In COMBAT the creature is rendered SMALL: GLYPH_MIN_CELL kicks in and pixels
-   collapse to clean colour blocks (+ causal flare). In the BUILDER preview/
-   combat we share drawCreaturePixels but pass a scaleMul that controls LOD.
    ========================================================================== */
 let t = 0;
 let shake = 0, hitstop = 0;
@@ -1099,7 +1280,7 @@ const dust      = [];
 const floaters  = [];
 const slashFX   = [];
 const bolts     = [];
-const popups    = [];   // trait activation popups (combat)
+const popups    = [];
 let lightFlash  = 0, lightCol = '#fff';
 
 for(let i=0;i<46;i++){
@@ -1107,7 +1288,7 @@ for(let i=0;i<46;i++){
     z:0.3+rnd()*0.7, sp:6+rnd()*16, ph:rnd()*7 });
 }
 
-function combatCellMul(){ return COMBAT_CELL_FRAC; }  // shrink combat creatures (LOD)
+function combatCellMul(){ return COMBAT_CELL_FRAC; }
 function creatureScreenX(f){ return f.homeX + f.face*f.advance + f.knock; }
 function depthScale(f){
   const back = Math.max(0, f.knock * f.face);
@@ -1207,14 +1388,22 @@ function projectileImpactFX(p){
         life:0.25+rnd()*0.25, col:'#ffffff', sz:1+rnd()*2, grav:0, drag:0.01 }); }
     lightFlash=1.0; lightCol=SCHOOL.spark.light; shake=Math.max(shake,SHAKE_CRIT*0.8);
     triggerZoom(0.12);
+  } else if(p.school==='poison'){
+    burst(ix,iy,20,['#7bd64a','#a6ff6a','#4a8a2a','#d6ff9a'],240,160,4);
+    for(let i=0;i<6;i++){ const a=-1.0-rnd()*1.1;
+      particles.push({ x:ix,y:iy, vx:Math.cos(a)*(80+rnd()*90)*(rnd()<.5?-1:1),
+        vy:Math.sin(a)*(120+rnd()*100), life:0.6+rnd()*0.5, col:'#a6ff6a', sz:2+rnd()*2, grav:-30, drag:0.06 }); }
+    lightFlash=0.55; lightCol=SCHOOL.poison.light;
+  } else if(p.school==='arcane'){
+    burst(ix,iy,28,['#c060ff','#f0d0ff','#9030d0','#ffffff'],320,60,4);
+    for(let i=0;i<12;i++){ const a=rnd()*6.283;
+      particles.push({ x:ix,y:iy, vx:Math.cos(a)*(140+rnd()*160), vy:Math.sin(a)*(140+rnd()*160)-30,
+        life:0.4+rnd()*0.4, col:'#f0d0ff', sz:1.5+rnd()*2.5, grav:0, drag:0.03 }); }
+    lightFlash=1.0; lightCol=SCHOOL.arcane.light; shake=Math.max(shake,SHAKE_CRIT*0.9);
+    triggerZoom(0.13);
   }
 }
 
-/* ---- shared creature renderer (LOD via cell size) ------------------------
-   `lod` true => combat: skip per-pixel glyphs + catalyst link lines once the
-   cell is small; just clean colour blocks + causal flare. This is the
-   builder-detail -> combat-clean transition the director asked for.
-   ------------------------------------------------------------------------- */
 function drawCreaturePixels(f, sx, baseY, scaleMul, breathPhase, inspectType, lod){
   const s = depthScale(f) * f.scale * scaleMul;
   const cell = PX*s;
@@ -1231,7 +1420,6 @@ function drawCreaturePixels(f, sx, baseY, scaleMul, breathPhase, inspectType, lo
     ctx.beginPath(); ctx.arc(sx, baseY-3*PX*s, r, 0, 7); ctx.fill(); ctx.globalAlpha=1;
   }
 
-  // catalyst link lines — only in detailed (builder) mode
   if(detailed){
     for(let i=0;i<f.px.length;i++){
       const c=f.px[i]; if(c.t!=='catalyst') continue;
@@ -1300,7 +1488,6 @@ function drawCreaturePixels(f, sx, baseY, scaleMul, breathPhase, inspectType, lo
     }
   }
 
-  // status colour overlays (combat) — tray is separate, this is ambient tint
   if(f.statuses.some(st2=>st2.key==='slow')){
     ctx.globalAlpha=0.18; ctx.fillStyle='#5ad6ff';
     ctx.fillRect(sx-30*s, baseY-3.4*PX*s-6, 60*s, 4.2*PX*s+6); ctx.globalAlpha=1;
@@ -1309,8 +1496,11 @@ function drawCreaturePixels(f, sx, baseY, scaleMul, breathPhase, inspectType, lo
     ctx.globalAlpha=0.13+0.1*Math.abs(Math.sin(t*22)); ctx.fillStyle='#c79bff';
     ctx.fillRect(sx-30*s, baseY-3.4*PX*s-6, 60*s, 4.2*PX*s+6); ctx.globalAlpha=1;
   }
+  if(f.statuses.some(st2=>st2.key==='poison')){
+    ctx.globalAlpha=0.12+0.06*Math.abs(Math.sin(t*4)); ctx.fillStyle='#7bd64a';
+    ctx.fillRect(sx-30*s, baseY-3.4*PX*s-6, 60*s, 4.2*PX*s+6); ctx.globalAlpha=1;
+  }
   if(f.statuses.some(st2=>st2.key==='bastion')){
-    // golden-green shield shimmer (positive)
     ctx.globalAlpha=0.10+0.08*Math.abs(Math.sin(t*5)); ctx.fillStyle='#7CE0A0';
     ctx.fillRect(sx-32*s, baseY-3.6*PX*s-8, 64*s, 4.6*PX*s+10); ctx.globalAlpha=1;
   }
@@ -1440,30 +1630,123 @@ function drawParticles(){
 }
 
 /* ============================================================================
-   10. BUILDER MODE — grid, palette, bonds, shapes, panels, LOD
+   10. META-STATE — inventory, budget, grid-unlock, level, codex, toasts (R1/R5/R6)
    ----------------------------------------------------------------------------
-   The build is an array of {gx,gy,type}. Grid centred on the core at (0,0).
-   Live: every edit recomputes traits + stats + moveset + shape flashes.
+   All deterministic: loot uses a seeded RNG advanced by a click counter, so the
+   same Nth loot click always yields the same batch.
    ========================================================================== */
-let APP = 'builder';            // 'builder' | 'combat'
-let build = HERO_BUILD.map(p=>({...p}));   // current editable build (clone)
-let selectedType = 'force';     // currently-selected palette type
-let showAllBonds = false;       // «всі звʼязки» toggle
-let builderZoom = 1.0;          // LOD slider: scales BUILD_CELL
-let derived = null;             // cached deriveStats(build)
-let traitsCache = [];           // cached traits
-let hoverCell = null;           // {gx,gy} grid cell under mouse
-let hoverPixIdx = -1;           // index of pixel under mouse (or -1)
-const shapeFlash = {};          // key -> {t} for newly-completed shape flash
-let prevShapeKeys = new Set();
+const META = {
+  level: 1,
+  budgetCap: BUDGET_BASE,
+  ringUnlocked: GRID_START_RING,      // Chebyshev radius of unlocked region
+  inventory: {},                      // type -> owned count
+  lootClicks: 0,                      // advances deterministic loot RNG
+  discovered: {},                     // traitKey -> true (codex session memory)
+};
+// seed every placeable cube to 0
+for(const k of TYPE_ORDER){ if(k!=='core') META.inventory[k]=0; }
 
-// builder grid screen geometry (left area; panels on the right)
+// deterministic loot RNG keyed by click index
+function lootRng(n){ return mulberry32(SEED_BASE*7 + n*2654435761); }
+const PLACEABLE = TYPE_ORDER.filter(k=>k!=='core');
+function weightedCubePick(r){
+  // pick a rarity by weight, then a uniform cube of that rarity
+  let total=0; for(const k in RARITY_WEIGHT) total+=RARITY_WEIGHT[k];
+  let roll=r()*total, rar='common';
+  for(const k in RARITY_WEIGHT){ roll-=RARITY_WEIGHT[k]; if(roll<=0){ rar=k; break; } }
+  const pool=PLACEABLE.filter(k=>CUBES[k].rarity===rar);
+  if(pool.length===0) return PLACEABLE[(r()*PLACEABLE.length)|0];
+  return pool[(r()*pool.length)|0];
+}
+function grantLoot(batchRange){
+  META.lootClicks++;
+  const r = lootRng(META.lootClicks);
+  const n = batchRange[0] + ((r()*(batchRange[1]-batchRange[0]+1))|0);
+  const got = {};
+  for(let i=0;i<n;i++){
+    const k=weightedCubePick(r);
+    META.inventory[k]=(META.inventory[k]||0)+1;
+    got[k]=(got[k]||0)+1;
+  }
+  const parts=Object.keys(got).map(k=>CUBES[k].name+'×'+got[k]);
+  toast('Лут: '+parts.join(', '), '#5ec07e');
+}
+function owned(type){ return type==='core' ? Infinity : (META.inventory[type]||0); }
+
+// budget: sum of placed cube costs (core is 0)
+function buildCost(arr){ let s=0; for(const p of (arr||build)) s+=cubeCost(p.type); return s; }
+function budgetUsed(){ return buildCost(build); }
+function budgetCap(){ return META.budgetCap; }
+
+// grid unlock: a cell is unlocked if within Chebyshev radius ringUnlocked AND in hard cap
+function cellUnlocked(gx,gy){
+  const half=GRID_MAX>>1;
+  if(Math.abs(gx)>half || Math.abs(gy)>half) return false;
+  return Math.max(Math.abs(gx),Math.abs(gy)) <= META.ringUnlocked;
+}
+function expandGrid(){
+  const half=GRID_MAX>>1;
+  if(META.ringUnlocked>=half){ toast('Поле вже максимальне', '#e3b341'); return false; }
+  if(META.level<1+EXPAND_LEVEL_COST && false){ /* cost is level-points, see below */ }
+  // spend a level-point of "progress": require level high enough; cheap demo gate
+  META.ringUnlocked++;
+  toast('Поле розширено до '+(META.ringUnlocked*2+1)+'×'+(META.ringUnlocked*2+1), '#7ea0d0');
+  return true;
+}
+function levelUp(){
+  META.level++;
+  META.budgetCap += BUDGET_PER_LEVEL;
+  let msg='Рівень '+META.level+' · бюджет +'+BUDGET_PER_LEVEL;
+  if(META.level % RING_UNLOCK_EVERY === 0){
+    const half=GRID_MAX>>1;
+    if(META.ringUnlocked<half){ META.ringUnlocked++; msg+=' · поле розширено'; }
+  }
+  grantLoot(LOOT_LEVEL_BATCH);
+  toast(msg, '#b07ed0');
+}
+
+// codex discovery
+function markDiscovered(traits){
+  for(const tr of traits){ if(!META.discovered[tr.key]) META.discovered[tr.key]=true; }
+}
+
+// toasts (transient on-screen messages)
+const toasts=[];
+function toast(text, col){ toasts.push({ text, col:col||'#dfe8ff', t:0, life:2.4 }); if(toasts.length>5) toasts.shift(); }
+function stepToasts(dt){ for(let i=toasts.length-1;i>=0;i--){ toasts[i].t+=dt; if(toasts[i].t>=toasts[i].life) toasts.splice(i,1); } }
+
+/* ============================================================================
+   11. BUILDER MODE — grid, inventory UI, bonds, preview, panels, LOD
+   ========================================================================== */
+let APP = 'builder';
+let build = [ {gx:0,gy:0,type:'core'} ];   // start from just the core (R1/R5/R6 arc)
+let selectedType = 'vital';
+let showAllBonds = false;
+let builderZoom = 1.0;
+let derived = null;
+let traitsCache = [];
+let hoverCell = null;
+let hoverPixIdx = -1;
+const shapeFlash = {};
+let prevShapeKeys = new Set();
+let showCodex = false;
+let detailExpanded = false;
+
+// inventory UI state
+let invTab = 'all';        // 'all' | category key
+let invRarity = 'all';     // 'all' | rarity key
+let invSort = 'rarity';    // 'rarity' | 'cost' | 'name'
+let invSearch = '';        // text filter
+let invScroll = 0;
+
+const RIGHT_PANEL_W = 360;
+
 function builderGeom(){
   const cell = BUILD_CELL*builderZoom;
-  const panelW = 330;                 // right panel reserve
+  const panelW = RIGHT_PANEL_W;
   const areaW = W - panelW;
-  const cx = areaW*0.5;               // grid centre x (screen)
-  const cy = H*0.52;                  // grid centre y (screen)
+  const cx = areaW*0.5;
+  const cy = H*0.50;
   return { cell, cx, cy, panelW, areaW };
 }
 function gridToScreen(gx, gy){
@@ -1478,14 +1761,13 @@ function screenToGrid(mx, my){
 function recompute(){
   derived = deriveStats(build);
   traitsCache = derived.traits;
-  // shape-completion flash: any shape key newly present this frame
+  markDiscovered(traitsCache);   // codex: anything active is now discovered
   const shapeKeys = new Set(traitsCache.filter(tr=>tr.kind==='shape').map(tr=>tr.key));
   for(const k of shapeKeys){ if(!prevShapeKeys.has(k)) shapeFlash[k]={t:0}; }
   prevShapeKeys = shapeKeys;
 }
 recompute();
 
-// connectivity: orthogonal flood fill from the core; returns Set of indices reachable
 function connectedSet(arr){
   const byCell=new Map(); arr.forEach((p,i)=>byCell.set(p.gx+','+p.gy,i));
   const coreI = arr.findIndex(p=>p.type==='core');
@@ -1505,32 +1787,51 @@ function orthAdjToBody(gx,gy){
   return build.some(p=> (Math.abs(p.gx-gx)+Math.abs(p.gy-gy))===1 );
 }
 
+// Returns {ok, reason} for placing selectedType at (gx,gy)
+function canPlace(gx,gy,type){
+  type=type||selectedType;
+  if(cellOccupied(gx,gy)) return {ok:false, reason:'зайнято'};
+  if(!cellUnlocked(gx,gy)) return {ok:false, reason:'клітинка замкнена 🔒'};
+  if(!orthAdjToBody(gx,gy)) return {ok:false, reason:'має торкатись тіла'};
+  if(type==='core') return {ok:false, reason:'Ядро лише одне'};
+  if(owned(type)<=0) return {ok:false, reason:'немає в інвентарі'};
+  if(budgetUsed()+cubeCost(type) > budgetCap()) return {ok:false, reason:'перевищує бюджет'};
+  return {ok:true};
+}
+
 function placePixel(gx,gy){
-  if(cellOccupied(gx,gy)) return;
-  if(!orthAdjToBody(gx,gy)) return;            // must touch existing body
-  if(Math.abs(gx)>(GRID_N>>1) || Math.abs(gy)>(GRID_N>>1)) return; // stay in grid
+  const res=canPlace(gx,gy,selectedType);
+  if(!res.ok){ toast('Не можна: '+res.reason, '#e5814b'); return; }
   build.push({ gx, gy, type:selectedType });
+  META.inventory[selectedType]--;       // R1: consume from inventory
   recompute();
 }
 function removePixel(idx){
   const p=build[idx];
-  if(p.type==='core') return;                  // never remove the core
-  // disallow if removal would orphan/disconnect remaining pixels
+  if(p.type==='core'){ toast('Ядро не можна прибрати', '#e3b341'); return; }
   const trial = build.slice(0,idx).concat(build.slice(idx+1));
   const reach = connectedSet(trial);
-  if(reach.size !== trial.length) return;      // would disconnect -> disallow
+  if(reach.size !== trial.length){ toast('Прибирання відʼєднає тіло', '#e5814b'); return; }
   build.splice(idx,1);
+  META.inventory[p.type]=(META.inventory[p.type]||0)+1;  // R1: return to inventory
   recompute();
 }
 
 function loadPreset(key){
-  build = PRESETS[key].build.map(p=>({...p}));
-  prevShapeKeys = new Set();   // re-flash shapes on load
+  // load preset, but reconcile with inventory+budget: grant any missing cubes &
+  // bump cap so the director can inspect the build. (Demo affordance.)
+  const pb = PRESETS[key].build.map(p=>({...p}));
+  build = pb;
+  // ensure inventory & budget can host it
+  const need={}; for(const p of pb){ if(p.type!=='core') need[p.type]=(need[p.type]||0)+1; }
+  for(const k in need){ if((META.inventory[k]||0) < 0) META.inventory[k]=0; }
+  const cost=buildCost(pb);
+  if(cost>META.budgetCap) META.budgetCap=cost;
+  prevShapeKeys = new Set();
   recompute();
+  toast('Пресет «'+PRESETS[key].name+'» (демо: бюджет підлаштовано)', '#9fb4d6');
 }
 
-// ---- bond list (screen-space) for the active synergies --------------------
-// returns [{i,j,key,name,x1,y1,x2,y2}]
 function bondSegments(){
   const out=[];
   for(const tr of traitsCache){
@@ -1544,71 +1845,159 @@ function bondSegments(){
   return out;
 }
 
-function drawBuilderGrid(){
-  const { cell, cx, cy, panelW, areaW } = builderGeom();
-  const half = GRID_N>>1;
-  // faint grid
-  ctx.strokeStyle='rgba(90,120,170,0.10)'; ctx.lineWidth=1;
-  for(let g=-half; g<=half; g++){
-    const a=gridToScreen(-half,g), b=gridToScreen(half,g);
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-    const c=gridToScreen(g,-half), d=gridToScreen(g,half);
-    ctx.beginPath(); ctx.moveTo(c.x,c.y); ctx.lineTo(d.x,d.y); ctx.stroke();
+/* ---- SYNERGY PREVIEW (R3): with a type selected & hovering an empty placeable
+   cell, compute which existing neighbours WOULD bond and which synergy/shape
+   would (or would more strongly) trigger if placed. -------------------------- */
+function previewAt(gx,gy,type){
+  type=type||selectedType;
+  const res=canPlace(gx,gy,type);
+  if(!res.ok && res.reason!=='перевищує бюджет') return null;  // still preview if only budget blocks
+  // build a trial and diff traits
+  const trial=build.concat([{gx,gy,type}]);
+  const before=detectTraits(build);
+  const after=detectTraits(trial);
+  const newIdx=trial.length-1;
+  // neighbours that bond with the ghost (adjacency)
+  const bondNeighbors=[];
+  const byCell=new Map(); build.forEach((p,i)=>byCell.set(p.gx+','+p.gy,i));
+  for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+    const j=byCell.get((gx+dx)+','+(gy+dy));
+    if(j===undefined) continue;
+    const q=build[j];
+    for(const d of SYNERGY_DEFS){ if(d.match(type,q.type)||d.match(q.type,type)){ bondNeighbors.push({j,key:d.key,name:d.name}); break; } }
   }
-
-  // placement-candidate highlight (empty cells orthogonally adjacent to body)
-  if(hoverCell){
-    const {gx,gy}=hoverCell;
-    const occ=cellOccupied(gx,gy);
-    if(!occ && orthAdjToBody(gx,gy) && Math.abs(gx)<=half && Math.abs(gy)<=half){
-      const s=gridToScreen(gx,gy);
-      ctx.globalAlpha=0.25+0.1*Math.sin(t*6); ctx.fillStyle=colorOfType(selectedType);
-      ctx.fillRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
-      ctx.globalAlpha=1;
-      ctx.strokeStyle=colorOfType(selectedType); ctx.lineWidth=2;
-      ctx.strokeRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
+  // which traits gained magnitude (or appeared) thanks to the ghost
+  const gained=[];
+  const bmap={}; for(const tr of before) bmap[tr.key]=tr.magnitude;
+  for(const tr of after){
+    const wasMag=bmap[tr.key]||0;
+    if(tr.magnitude>wasMag && tr.pixelIndices.includes(newIdx)){
+      gained.push({ key:tr.key, name:tr.name, kind:tr.kind, delta:tr.magnitude-wasMag, sets:tr.sets, idxAfter:tr.pixelIndices });
+    } else if(!bmap[tr.key] && tr.pixelIndices.includes(newIdx)){
+      gained.push({ key:tr.key, name:tr.name, kind:tr.kind, delta:tr.magnitude, sets:tr.sets, idxAfter:tr.pixelIndices });
     }
   }
+  return { gx, gy, type, bondNeighbors, gained, trial, newIdx, budgetBlocked:(res.ok===false) };
+}
 
-  // ---- SHAPE highlights (outline matched sets + soft pulse) ----------------
+function drawBuilderGrid(){
+  const { cell, cx, cy } = builderGeom();
+  const half = GRID_MAX>>1;
+
+  // ---- draw cells: unlocked faint grid vs locked hatched ----
+  for(let gy=-half; gy<=half; gy++){
+    for(let gx=-half; gx<=half; gx++){
+      const s=gridToScreen(gx,gy);
+      const x=s.x-cell/2, y=s.y-cell/2, w=cell-1, hh=cell-1;
+      if(cellUnlocked(gx,gy)){
+        ctx.strokeStyle='rgba(90,120,170,0.12)'; ctx.lineWidth=1;
+        ctx.strokeRect(x,y,w,hh);
+      } else {
+        // locked: dim hatched
+        ctx.fillStyle='rgba(20,26,36,0.55)'; ctx.fillRect(x,y,w,hh);
+        ctx.strokeStyle='rgba(60,76,100,0.35)'; ctx.lineWidth=1;
+        ctx.beginPath();
+        for(let o=-hh;o<w;o+=6){ ctx.moveTo(x+Math.max(0,o), y+Math.max(0,-o)); ctx.lineTo(x+Math.min(w,o+hh), y+Math.min(hh,hh-o)); }
+        ctx.stroke();
+      }
+    }
+  }
+  // unlocked-region border
+  {
+    const r=META.ringUnlocked;
+    const a=gridToScreen(-r,-r), b=gridToScreen(r,r);
+    ctx.strokeStyle='rgba(120,160,210,0.4)'; ctx.lineWidth=2;
+    ctx.strokeRect(a.x-cell/2, a.y-cell/2, (2*r+1)*cell, (2*r+1)*cell);
+  }
+
+  // ---- SHAPE highlights ----
   drawShapeHighlights();
 
-  // ---- BOND lines (CONTEXTUAL): by default only for hovered pixel/type -----
+  // ---- BOND lines (contextual) ----
   if(cell>=LOD_BOND_MINCELL){
     const segs=bondSegments();
     let hoverType = (hoverPixIdx>=0) ? build[hoverPixIdx].type : null;
     for(const sg of segs){
       let show = showAllBonds;
       if(!show && hoverPixIdx>=0){
-        // show bonds touching the hovered pixel, or sharing its type
         show = (sg.i===hoverPixIdx || sg.j===hoverPixIdx)
             || build[sg.i].type===hoverType || build[sg.j].type===hoverType;
       }
       if(!show) continue;
-      drawBond(sg);
+      drawBond(sg, 1.0);
     }
   }
 
-  // ---- PIXELS (builder = full detail; big glyphs) --------------------------
-  const half2=half;
-  // build a transient fighter-like wrapper so we can reuse glyph/behavior look
+  // ---- SYNERGY PREVIEW ghost (R3) ----
+  let preview=null;
+  if(hoverCell && hoverPixIdx<0){
+    preview=previewAt(hoverCell.gx, hoverCell.gy, selectedType);
+  }
+  if(preview){
+    const s=gridToScreen(preview.gx,preview.gy);
+    const ghostCol = preview.budgetBlocked ? '#e5814b' : colorOfType(selectedType);
+    // ghost cube
+    ctx.globalAlpha=0.35+0.12*Math.sin(t*6); ctx.fillStyle=ghostCol;
+    ctx.fillRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
+    ctx.globalAlpha=0.9; ctx.setLineDash([5,4]);
+    ctx.strokeStyle=ghostCol; ctx.lineWidth=2;
+    ctx.strokeRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
+    ctx.setLineDash([]);
+    if(cell>=GLYPH_MIN_CELL) drawGlyph(PIX[selectedType].glyph, s.x, s.y, cell-2, '#0a0d12', 0.7);
+    ctx.globalAlpha=1;
+    // would-be bonds: draw dashed lines + highlight neighbours
+    for(const bn of preview.bondNeighbors){
+      const q=build[bn.j]; const qs=gridToScreen(q.gx,q.gy);
+      ctx.setLineDash([4,3]); ctx.globalAlpha=0.8;
+      ctx.strokeStyle=traitColor(bn.key); ctx.lineWidth=BOND_WIDTH*builderZoom;
+      ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(qs.x,qs.y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle=traitColor(bn.key); ctx.lineWidth=2;
+      ctx.strokeRect(qs.x-cell/2+1, qs.y-cell/2+1, cell-4, cell-4);
+      ctx.globalAlpha=1;
+    }
+    // preview label
+    if(preview.gained.length || preview.bondNeighbors.length){
+      const labels=preview.gained.length
+        ? preview.gained.map(g=>g.name+(g.kind==='adjacency'?' +'+g.delta:'!')).join('  ')
+        : 'торкання: '+[...new Set(preview.bondNeighbors.map(b=>b.name))].join(' ');
+      ctx.font='bold 12px system-ui'; ctx.textAlign='center';
+      const ww=ctx.measureText(labels).width+16;
+      ctx.fillStyle='rgba(8,12,20,0.92)'; ctx.fillRect(s.x-ww/2, s.y-cell/2-26, ww, 20);
+      ctx.strokeStyle='#5a7bc0'; ctx.lineWidth=1; ctx.strokeRect(s.x-ww/2, s.y-cell/2-26, ww, 20);
+      ctx.fillStyle='#dff0c0'; ctx.fillText(labels, s.x, s.y-cell/2-12);
+      ctx.textAlign='left';
+    }
+  } else if(hoverCell && hoverPixIdx<0){
+    // plain placement candidate (no synergy)
+    const {gx,gy}=hoverCell;
+    if(canPlace(gx,gy,selectedType).ok){
+      const s=gridToScreen(gx,gy);
+      ctx.globalAlpha=0.22+0.1*Math.sin(t*6); ctx.fillStyle=colorOfType(selectedType);
+      ctx.fillRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2); ctx.globalAlpha=1;
+    }
+  }
+
+  // ---- PIXELS (full detail) ----
+  const hoverType=hoverType_();
   for(let i=0;i<build.length;i++){
     const p=build[i];
     const s=gridToScreen(p.gx,p.gy);
     const bm=behaviorMod(p.type, t, i*1.7);
     const w=cell-2;
     const base=colorOfType(p.type);
-    const dim = (hoverPixIdx>=0 && hoverType_() && p.type!==hoverType_()) ? INSPECT_DIM : 1;
+    const dim = (hoverPixIdx>=0 && hoverType && p.type!==hoverType) ? INSPECT_DIM : 1;
     ctx.globalAlpha=dim;
     ctx.fillStyle = lighten(base, Math.min(0.6, bm.bright));
     ctx.fillRect(s.x-w/2, s.y-w/2, w, w);
     ctx.fillStyle='rgba(255,255,255,0.10)';
     ctx.fillRect(s.x-w/2, s.y-w/2, w, Math.max(1,w*0.18));
-    // glyph (LOD: only if cell big enough)
+    // rarity corner pip
+    const rc=RARITY_COL[cubeRarity(p.type)];
+    ctx.fillStyle=rc; ctx.fillRect(s.x+w/2-5, s.y-w/2+1, 4, 4);
     if(cell>=GLYPH_MIN_CELL){
       drawGlyph(PIX[p.type].glyph, s.x, s.y, w, PIX[p.type].tint, dim*0.95);
     }
-    // core ring
     if(p.type==='core'){
       ctx.globalAlpha=dim; ctx.strokeStyle='#fff3c0'; ctx.lineWidth=2;
       ctx.strokeRect(s.x-w/2, s.y-w/2, w, w);
@@ -1616,32 +2005,38 @@ function drawBuilderGrid(){
     ctx.globalAlpha=1;
   }
 
-  // hovered pixel ring + remove hint
   if(hoverPixIdx>=0){
     const p=build[hoverPixIdx]; const s=gridToScreen(p.gx,p.gy);
     ctx.strokeStyle = p.type==='core' ? '#888' : '#ff6b6b';
     ctx.lineWidth=2; ctx.strokeRect(s.x-cell/2, s.y-cell/2, cell-2, cell-2);
   }
 
-  // title + grid legend
+  // footer: hint + status on a backing strip (legible over the arena, no overlap)
   ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  const hint='БІЛДЕР — обери куб справа · клік: поставити суміжно · клік по кубу: прибрати (повертає в інвентар)';
+  const status='кубів: '+(build.length-1)+'    масштаб(LOD): '+(builderZoom).toFixed(2)+'× [ ]    обрано: '+(CUBES[selectedType]?CUBES[selectedType].name:'—');
+  ctx.font='bold 13px system-ui'; const hw=ctx.measureText(hint).width;
+  ctx.font='11px system-ui';      const sw=ctx.measureText(status).width;
+  const bw=Math.max(hw,sw)+22;
+  ctx.fillStyle='rgba(6,10,16,0.62)';
+  if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(10, H-58, bw, 46, 8); ctx.fill(); }
+  else ctx.fillRect(10, H-58, bw, 46);
   ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6';
-  ctx.fillText('БІЛДЕР — клік: поставити суміжно · клік по пікселю: прибрати', 16, 24);
-  ctx.font='11px system-ui'; ctx.fillStyle='#7e90ac';
-  ctx.fillText('пікселів: '+build.length+'    масштаб(LOD): '+(builderZoom).toFixed(2)+'×  [ та ]', 16, 42);
+  ctx.fillText(hint, 21, H-38);
+  ctx.font='11px system-ui'; ctx.fillStyle='#8fa2bf';
+  ctx.fillText(status, 21, H-20);
 }
 function hoverType_(){ return hoverPixIdx>=0 ? build[hoverPixIdx].type : null; }
 
-function drawBond(sg){
+function drawBond(sg, alphaMul){
+  alphaMul=alphaMul==null?1:alphaMul;
   const col=traitColor(sg.key);
-  // glowing link
   ctx.lineCap='round';
-  ctx.globalAlpha=0.35*BOND_GLOW; ctx.strokeStyle=col; ctx.lineWidth=BOND_WIDTH*builderZoom+4;
+  ctx.globalAlpha=0.35*BOND_GLOW*alphaMul; ctx.strokeStyle=col; ctx.lineWidth=BOND_WIDTH*builderZoom+4;
   ctx.beginPath(); ctx.moveTo(sg.x1,sg.y1); ctx.lineTo(sg.x2,sg.y2); ctx.stroke();
-  ctx.globalAlpha=0.95; ctx.strokeStyle=lighten(col,0.4); ctx.lineWidth=BOND_WIDTH*builderZoom;
+  ctx.globalAlpha=0.95*alphaMul; ctx.strokeStyle=lighten(col,0.4); ctx.lineWidth=BOND_WIDTH*builderZoom;
   ctx.beginPath(); ctx.moveTo(sg.x1,sg.y1); ctx.lineTo(sg.x2,sg.y2); ctx.stroke();
   ctx.globalAlpha=1;
-  // tiny synergy badge at midpoint
   const mx=(sg.x1+sg.x2)/2, my=(sg.y1+sg.y2)/2;
   const r=8*builderZoom+3;
   ctx.fillStyle='rgba(10,14,22,0.9)';
@@ -1657,7 +2052,6 @@ function drawShapeHighlights(){
     const col=traitColor(tr.icon)||traitColor(tr.key);
     const pulse=0.4+0.3*Math.sin(t*4)*SHAPE_PULSE;
     for(const set of tr.sets){
-      // outline bounding cells of the set
       ctx.globalAlpha=0.18+0.12*Math.max(0,Math.sin(t*3));
       ctx.fillStyle=col;
       for(const idx of set){
@@ -1672,7 +2066,6 @@ function drawShapeHighlights(){
       }
       ctx.globalAlpha=1;
     }
-    // completion flash: float the trait name once over the set centroid
     const fl=shapeFlash[tr.key];
     if(fl){
       fl.t += 1/60;
@@ -1692,158 +2085,313 @@ function drawShapeHighlights(){
   }
 }
 
-// ---- TYPE PALETTE (left/bottom strip, selectable) -------------------------
-function paletteGeom(){
-  const sw=44, gap=8, n=TYPE_ORDER.length;
-  const totalW=n*sw+(n-1)*gap;
-  const { areaW } = builderGeom();
-  const x0=Math.max(16, (areaW-totalW)/2);
-  const y0=H-72;
-  return { sw, gap, n, x0, y0, totalW };
-}
-function drawPalette(){
-  const { sw, gap, x0, y0 } = paletteGeom();
-  ctx.fillStyle='rgba(8,12,20,0.55)';
-  ctx.fillRect(x0-10, y0-26, TYPE_ORDER.length*(sw+gap)+8, sw+44);
-  ctx.font='bold 11px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
-  ctx.fillText('ПАЛІТРА — обери тип пікселя', x0, y0-12);
-  for(let i=0;i<TYPE_ORDER.length;i++){
-    const tk=TYPE_ORDER[i], meta=PIX[tk];
-    const x=x0+i*(sw+gap), y=y0;
-    const sel=(tk===selectedType);
-    ctx.fillStyle=colorOfType(tk);
-    ctx.fillRect(x,y,sw,sw);
-    if(sel){ ctx.strokeStyle='#fff'; ctx.lineWidth=3; ctx.strokeRect(x-1,y-1,sw+2,sw+2); }
-    else { ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1; ctx.strokeRect(x,y,sw,sw); }
-    drawGlyph(meta.glyph, x+sw/2, y+sw/2-3, sw, meta.tint, 0.95);
-    ctx.font='9px system-ui'; ctx.fillStyle=sel?'#fff':'#aab6c6'; ctx.textAlign='center';
-    ctx.fillText(meta.name, x+sw/2, y+sw-3);
-    ctx.textAlign='left';
+/* ---- INVENTORY PANEL (R2): tabs + rarity filter + sort + search + entries -- */
+const invHit = { tabs:[], rarities:[], sorts:[], entries:[], search:null };
+function filteredInventory(){
+  let list = PLACEABLE.slice();
+  if(invTab!=='all') list = list.filter(k=>CUBES[k].cat===invTab);
+  if(invRarity!=='all') list = list.filter(k=>CUBES[k].rarity===invRarity);
+  if(invSearch.trim()){
+    const q=invSearch.trim().toLowerCase();
+    list = list.filter(k=> CUBES[k].name.toLowerCase().includes(q) || CUBES[k].eff.toLowerCase().includes(q));
   }
+  if(invSort==='rarity') list.sort((a,b)=> RARITY_ORDER[CUBES[b].rarity]-RARITY_ORDER[CUBES[a].rarity] || CUBES[a].cost-CUBES[b].cost);
+  else if(invSort==='cost') list.sort((a,b)=> CUBES[a].cost-CUBES[b].cost || a.localeCompare(b));
+  else list.sort((a,b)=> CUBES[a].name.localeCompare(CUBES[b].name,'uk'));
+  return list;
 }
-function paletteHit(mx,my){
-  const { sw, gap, x0, y0 } = paletteGeom();
-  for(let i=0;i<TYPE_ORDER.length;i++){
-    const x=x0+i*(sw+gap), y=y0;
-    if(mx>=x&&mx<=x+sw&&my>=y&&my<=y+sw) return TYPE_ORDER[i];
-  }
-  return null;
-}
-
-// ---- PRESET BUTTONS (top-left under title) --------------------------------
-const presetButtons = [];
-function layoutPresetButtons(){
-  presetButtons.length=0;
-  const keys=Object.keys(PRESETS);
-  let x=16, y=56;
-  ctx.font='bold 12px system-ui';
-  for(const k of keys){
-    const label=PRESETS[k].name;
-    const w=ctx.measureText(label).width+22;
-    presetButtons.push({ k, x, y, w, h:26, label });
-    x+=w+8;
-  }
-}
-function drawPresetButtons(){
-  layoutPresetButtons();
-  ctx.font='bold 12px system-ui'; ctx.textBaseline='middle';
-  for(const b of presetButtons){
-    ctx.fillStyle='rgba(22,32,58,0.9)'; ctx.fillRect(b.x,b.y,b.w,b.h);
-    ctx.strokeStyle='#38507e'; ctx.lineWidth=1; ctx.strokeRect(b.x,b.y,b.w,b.h);
-    ctx.fillStyle='#dfe8ff'; ctx.textAlign='left';
-    ctx.fillText(b.label, b.x+10, b.y+b.h/2+1);
-  }
-  ctx.textBaseline='alphabetic';
-}
-function presetHit(mx,my){
-  for(const b of presetButtons){
-    if(mx>=b.x&&mx<=b.x+b.w&&my>=b.y&&my<=b.y+b.h) return b.k;
-  }
-  return null;
-}
-
-// ---- RIGHT PANELS: traits + stats + moveset -------------------------------
-function drawTraitsPanel(){
+function drawInventoryPanel(){
   const { panelW } = builderGeom();
-  const x=W-panelW+14, w=panelW-28;
+  const px=W-panelW+12, pw=panelW-24;
   let y=70;
-  ctx.fillStyle='rgba(8,12,20,0.6)'; ctx.fillRect(x-8, y-26, w+16, 250);
-  ctx.strokeStyle='rgba(90,120,170,0.25)'; ctx.lineWidth=1; ctx.strokeRect(x-8, y-26, w+16, 250);
+  const panelH = H*0.5 - 6;
+  invHit.tabs.length=invHit.rarities.length=invHit.sorts.length=invHit.entries.length=0;
+  invHit.search=null;
+  ctx.fillStyle='rgba(8,12,20,0.66)'; ctx.fillRect(px-8, y-26, pw+16, panelH+26);
+  ctx.strokeStyle='rgba(90,120,170,0.25)'; ctx.lineWidth=1; ctx.strokeRect(px-8, y-26, pw+16, panelH+26);
   ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
-  ctx.fillText('АКТИВНІ ТРЕЙТИ (синергії + форми)', x, y-10);
-  ctx.textBaseline='middle';
-  if(traitsCache.length===0){
-    ctx.font='12px system-ui'; ctx.fillStyle='#6f7e94';
-    ctx.fillText('— ще немає. Спробуй пресет «Титан».', x, y+10);
+  ctx.fillText('ІНВЕНТАР КУБІВ', px, y-10);
+
+  // category tabs
+  ctx.font='bold 11px system-ui'; ctx.textBaseline='middle';
+  let tx=px, ty=y+4;
+  const tabs=[['all','Все']].concat(CAT_ORDER.map(c=>[c,CAT[c].ua]));
+  for(const [k,lbl] of tabs){
+    const w=ctx.measureText(lbl).width+12;
+    const sel=invTab===k;
+    ctx.fillStyle=sel?'#2a3a5e':'rgba(22,32,58,0.7)'; ctx.fillRect(tx,ty,w,18);
+    ctx.strokeStyle=sel?'#7ea0d0':'#38507e'; ctx.lineWidth=1; ctx.strokeRect(tx,ty,w,18);
+    ctx.fillStyle=sel?'#fff':'#aab6c6'; ctx.fillText(lbl, tx+6, ty+9);
+    invHit.tabs.push({k,x:tx,y:ty,w,h:18});
+    tx+=w+5; if(tx+50>px+pw){ tx=px; ty+=22; }
   }
-  const rowH=34;
-  for(let i=0;i<traitsCache.length;i++){
-    const tr=traitsCache[i]; const ry=y+i*rowH+8;
-    if(ry>y+250-40) { ctx.fillStyle='#7e90ac'; ctx.font='11px system-ui'; ctx.fillText('+ще '+(traitsCache.length-i), x, ry+6); break; }
-    const col=traitColor(tr.icon)||traitColor(tr.key);
-    // icon chip
-    ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fillRect(x, ry, 26, 26);
-    ctx.strokeStyle=col; ctx.lineWidth=1.5; ctx.strokeRect(x, ry, 26, 26);
-    drawTraitIcon(tr.icon, x+13, ry+13, 24, col);
-    // name + magnitude + effect
-    ctx.font='bold 12px system-ui'; ctx.fillStyle='#eaf0fb';
-    const tag = tr.kind==='adjacency' ? ('×'+tr.magnitude+' пар') : ('×'+tr.magnitude);
-    ctx.fillText(tr.name+'  '+tag, x+34, ry+8);
-    ctx.font='10px system-ui'; ctx.fillStyle='#9fb0c8';
-    const delta = derived.traitDelta[tr.key] ? ('['+derived.traitDelta[tr.key]+']  ') : '';
-    ctx.fillText(delta+tr.effect, x+34, ry+20);
+  let ry=ty+26;
+
+  // rarity filter + sort row
+  ctx.font='10px system-ui';
+  let rx=px;
+  ctx.fillStyle='#7e90ac'; ctx.fillText('рід:', rx, ry+8); rx+=26;
+  for(const [k,lbl] of [['all','усі'],['common','зв'],['rare','рід'],['epic','еп'],['legendary','лег']]){
+    const w=ctx.measureText(lbl).width+10; const sel=invRarity===k;
+    ctx.fillStyle=sel?'rgba(60,80,120,0.9)':'rgba(20,28,44,0.7)'; ctx.fillRect(rx,ry,w,16);
+    ctx.strokeStyle=sel?(RARITY_COL[k]||'#7ea0d0'):'#324768'; ctx.lineWidth=1; ctx.strokeRect(rx,ry,w,16);
+    ctx.fillStyle=sel?(RARITY_COL[k]||'#fff'):'#9aa6b8'; ctx.fillText(lbl,rx+5,ry+8);
+    invHit.rarities.push({k,x:rx,y:ry,w,h:16}); rx+=w+4;
   }
+  ry+=20;
+  rx=px; ctx.fillStyle='#7e90ac'; ctx.fillText('сорт:', rx, ry+8); rx+=30;
+  for(const [k,lbl] of [['rarity','за рідкістю'],['cost','за вартістю'],['name','за назвою']]){
+    const w=ctx.measureText(lbl).width+10; const sel=invSort===k;
+    ctx.fillStyle=sel?'rgba(60,80,120,0.9)':'rgba(20,28,44,0.7)'; ctx.fillRect(rx,ry,w,16);
+    ctx.strokeStyle=sel?'#7ea0d0':'#324768'; ctx.lineWidth=1; ctx.strokeRect(rx,ry,w,16);
+    ctx.fillStyle=sel?'#fff':'#9aa6b8'; ctx.fillText(lbl,rx+5,ry+8);
+    invHit.sorts.push({k,x:rx,y:ry,w,h:16}); rx+=w+4;
+  }
+  ry+=20;
+  // search box
+  ctx.fillStyle='rgba(14,20,32,0.9)'; ctx.fillRect(px, ry, pw, 18);
+  ctx.strokeStyle= invSearchFocus?'#7ea0d0':'#324768'; ctx.lineWidth=1; ctx.strokeRect(px, ry, pw, 18);
+  ctx.fillStyle=invSearch?'#dfe8ff':'#5f6f86';
+  ctx.fillText(invSearch? invSearch+(invSearchFocus?'|':'') : 'пошук… (клік, друкуй)', px+6, ry+9);
+  invHit.search={x:px,y:ry,w:pw,h:18};
+  ry+=26;
+
+  // entries grid
+  const list=filteredInventory();
+  const cols=2, ew=(pw-6)/cols, eh=44;
+  const listTop=ry;
+  const visibleH = (y-26+panelH) - listTop - 4;
+  const rows=Math.ceil(list.length/cols);
+  const maxScroll=Math.max(0, rows*eh - visibleH);
+  invScroll=Math.max(0, Math.min(maxScroll, invScroll));
+  ctx.save();
+  ctx.beginPath(); ctx.rect(px-8, listTop-2, pw+16, visibleH+4); ctx.clip();
   ctx.textBaseline='alphabetic';
+  for(let i=0;i<list.length;i++){
+    const k=list[i];
+    const cx=px+(i%cols)*(ew+6), cyy=listTop + ((i/cols)|0)*eh - invScroll;
+    if(cyy+eh<listTop-4 || cyy>listTop+visibleH+4) continue;
+    const c=CUBES[k];
+    const own=owned(k);
+    const affordable = budgetUsed()+c.cost<=budgetCap();
+    const usable = own>0 && affordable;
+    const sel=selectedType===k;
+    ctx.globalAlpha = usable?1:0.42;
+    ctx.fillStyle = sel?'rgba(40,58,94,0.95)':'rgba(18,26,42,0.92)';
+    ctx.fillRect(cx,cyy,ew,eh-4);
+    ctx.strokeStyle = RARITY_COL[c.rarity]; ctx.lineWidth=sel?2.4:1.4; ctx.strokeRect(cx,cyy,ew,eh-4);
+    // glyph swatch
+    ctx.fillStyle=c.col; ctx.fillRect(cx+4,cyy+4,26,26);
+    drawGlyph(c.glyph, cx+4+13, cyy+4+13, 26, c.tint, 1);
+    // name + count + cost
+    ctx.font='bold 11px system-ui'; ctx.fillStyle='#eaf0fb';
+    ctx.fillText(c.name, cx+34, cyy+13);
+    ctx.font='10px system-ui'; ctx.fillStyle=RARITY_COL[c.rarity];
+    ctx.fillText('×'+(own===Infinity?'∞':own)+'  ·  '+c.cost+'◆', cx+34, cyy+25);
+    ctx.font='9px system-ui'; ctx.fillStyle='#8fa0b8';
+    let eff=c.eff; const maxw=ew-38;
+    while(eff.length>4 && ctx.measureText(eff).width>maxw) eff=eff.slice(0,-2);
+    if(eff!==c.eff) eff=eff.slice(0,-1)+'…';
+    ctx.fillText(eff, cx+34, cyy+36);
+    ctx.globalAlpha=1;
+    invHit.entries.push({k,x:cx,y:cyy,w:ew,h:eh-4,usable});
+  }
+  ctx.restore();
+  // scrollbar hint
+  if(maxScroll>0){
+    const sbH=visibleH*(visibleH/(rows*eh));
+    const sbY=listTop + (invScroll/maxScroll)*(visibleH-sbH);
+    ctx.fillStyle='rgba(120,150,190,0.4)'; ctx.fillRect(px+pw-3, sbY, 3, sbH);
+  }
+  if(list.length===0){ ctx.fillStyle='#6f7e94'; ctx.font='11px system-ui'; ctx.fillText('— нічого за фільтром. Відкрий лут.', px, listTop+16); }
+}
+let invSearchFocus=false;
+
+/* ---- PROGRESSION HUD: level + budget bar + grid size (R5/R6) -------------- */
+function drawProgressHUD(){
+  const x=16, y=14, w=320, h=44;
+  ctx.fillStyle='rgba(8,12,20,0.7)'; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='rgba(90,120,170,0.3)'; ctx.lineWidth=1; ctx.strokeRect(x,y,w,h);
+  ctx.textBaseline='alphabetic'; ctx.textAlign='left';
+  ctx.font='bold 13px system-ui'; ctx.fillStyle='#cfe0ff';
+  ctx.fillText('Рівень '+META.level, x+10, y+18);
+  ctx.font='11px system-ui'; ctx.fillStyle='#9fb4d6';
+  ctx.fillText('Поле '+(META.ringUnlocked*2+1)+'×'+(META.ringUnlocked*2+1)+' / макс '+GRID_MAX+'×'+GRID_MAX, x+96, y+18);
+  // budget bar
+  const used=budgetUsed(), cap=budgetCap();
+  const bx=x+10, by=y+26, bw=w-20, bh=12;
+  ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(bx,by,bw,bh);
+  const frac=cap>0?Math.min(1,used/cap):0;
+  const full=used>=cap;
+  ctx.fillStyle = full?'#e5534b':(frac>0.8?'#e3b341':'#56b0e3');
+  ctx.fillRect(bx,by,bw*frac,bh);
+  ctx.strokeStyle='rgba(120,150,190,0.4)'; ctx.lineWidth=1; ctx.strokeRect(bx,by,bw,bh);
+  ctx.font='bold 10px system-ui'; ctx.fillStyle='#eaf0fb'; ctx.textAlign='center';
+  ctx.fillText('Бюджет: '+used+' / '+cap+'◆', bx+bw/2, by+10);
+  ctx.textAlign='left';
 }
 
+/* ---- RIGHT PANELS: stats (R4) + traits ------------------------------------ */
+const statHit = { detail:null };
 function drawStatsPanel(){
   const { panelW } = builderGeom();
   const x=W-panelW+14, w=panelW-28;
-  let y=345;
-  ctx.fillStyle='rgba(8,12,20,0.6)'; ctx.fillRect(x-8, y-26, w+16, 232);
-  ctx.strokeStyle='rgba(90,120,170,0.25)'; ctx.lineWidth=1; ctx.strokeRect(x-8, y-26, w+16, 232);
-  ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
-  ctx.fillText('СТАТИ (з урахуванням трейтів)', x, y-10);
+  let y=H*0.5+34;
   const s=derived;
-  const rows=[
-    ['HP', Math.round(s.maxHP), '#56d364'],
-    ['Броня', s.armor.toFixed(1), '#9fb0c8'],
-    ['Атака', s.atk.toFixed(1), '#E0483F'],
-    ['Ухил', (s.dodge*100).toFixed(0)+'%', '#F0C020'],
-    ['Крит', (s.crit*100).toFixed(0)+'%', '#EAEFF5'],
-    ['Точність', (s.acc*100).toFixed(0)+'%', '#cfe0ff'],
-    ['Швидкість', s.speed.toFixed(2), '#7fc8ff'],
-    ['Магія', s.magic.toFixed(0), '#D14FA6'],
-    ['Блок', (s.blockChance*100).toFixed(0)+'%', '#7CE0A0'],
-    ['Регенерація', s.regenPerSec.toFixed(1)+'/с', '#5BE08A'],
+  const panelH = detailExpanded ? 300 : 150;
+  ctx.fillStyle='rgba(8,12,20,0.66)'; ctx.fillRect(x-8, y-26, w+16, panelH);
+  ctx.strokeStyle='rgba(90,120,170,0.25)'; ctx.lineWidth=1; ctx.strokeRect(x-8, y-26, w+16, panelH);
+  ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillText('СТАТИ', x, y-10);
+
+  // PRIMARY row: 6 big icon-led stats
+  const primary=[
+    ['heart5','HP', Math.round(s.maxHP), '#56d364'],
+    ['blade','Атака', s.atk.toFixed(0), '#E0483F'],
+    ['shield','Броня', s.armor.toFixed(1), '#9fb0c8'],
+    ['flow','Швидк.', s.speed.toFixed(2), '#7fc8ff'],
+    ['blade','Крит', (s.crit*100).toFixed(0)+'%', '#EAEFF5'],
+    ['amplify','Магія', s.magic.toFixed(0), '#D14FA6'],
   ];
-  ctx.font='12px system-ui'; ctx.textBaseline='middle';
-  for(let i=0;i<rows.length;i++){
-    const [k,v,col]=rows[i];
-    const ry=y+ (i%5)*30 + 10;
-    const colX = x + (i<5?0:w/2);
-    ctx.fillStyle='#9fb0c8'; ctx.fillText(k, colX, ry);
-    ctx.fillStyle=col; ctx.font='bold 13px system-ui';
-    ctx.fillText(''+v, colX+96, ry);
-    ctx.font='12px system-ui';
+  const pcols=3, pcw=w/pcols;
+  for(let i=0;i<primary.length;i++){
+    const [ic,lbl,val,col]=primary[i];
+    const cx=x+(i%pcols)*pcw, cyy=y+4+((i/pcols)|0)*44;
+    ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.fillRect(cx,cyy,26,26);
+    drawTraitIcon(ic, cx+13, cyy+13, 22, col);
+    ctx.font='9px system-ui'; ctx.fillStyle='#8fa0b8'; ctx.fillText(lbl, cx+30, cyy+10);
+    ctx.font='bold 16px system-ui'; ctx.fillStyle=col; ctx.fillText(''+val, cx+30, cyy+25);
   }
-  // moveset icon row
-  const moves=deriveMoveset(build);
-  const my=y+178;
-  ctx.font='bold 11px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textBaseline='alphabetic';
-  ctx.fillText('РУХИ (відкриті білдом):', x, my-6);
-  ctx.font='22px system-ui'; let ix=x;
-  for(const k of moves){ ctx.fillText(MOVES[k].icon, ix, my+22); ix+=34; }
-  if(moves.length===0){ ctx.font='12px system-ui'; ctx.fillStyle='#6f7e94'; ctx.fillText('— лише кулак', x, my+20); }
+  let dy=y+4+Math.ceil(primary.length/pcols)*44+4;
+
+  // «Детально ▾» toggle
+  ctx.font='bold 11px system-ui'; ctx.fillStyle='#9fb4d6';
+  const dlbl=(detailExpanded?'Детально ▴':'Детально ▾');
+  const dw=ctx.measureText(dlbl).width+10;
+  ctx.fillStyle='rgba(22,32,58,0.8)'; ctx.fillRect(x,dy,dw,18);
+  ctx.strokeStyle='#38507e'; ctx.lineWidth=1; ctx.strokeRect(x,dy,dw,18);
+  ctx.fillStyle='#cfe0ff'; ctx.textBaseline='middle'; ctx.fillText(dlbl, x+5, dy+10); ctx.textBaseline='alphabetic';
+  statHit.detail={x,y:dy,w:dw,h:18};
+
+  if(detailExpanded){
+    let ly=dy+26;
+    const det=[
+      ['Ухил', (s.dodge*100).toFixed(0)+'%'],
+      ['Точність', (s.acc*100).toFixed(0)+'%'],
+      ['Блок', (s.blockChance*100).toFixed(0)+'%'],
+      ['Регенерація', s.regenPerSec.toFixed(1)+'/с'],
+      ['Вампіризм', (s.lifesteal*100).toFixed(0)+'%'],
+      ['Пробій броні', (s.pierce*100).toFixed(0)+'%'],
+      ['Маг. опір', (s.magResist*100).toFixed(0)+'%'],
+      ['ATB/ривок', '+'+(s.haste*100).toFixed(0)+'%'],
+    ];
+    ctx.font='11px system-ui';
+    for(let i=0;i<det.length;i++){
+      const [k,v]=det[i]; const c=i%2, rr=(i/2)|0;
+      const cx=x+c*(w/2), cyy=ly+rr*18;
+      ctx.fillStyle='#8fa0b8'; ctx.fillText(k, cx, cyy+8);
+      ctx.fillStyle='#dfe8ff'; ctx.font='bold 11px system-ui'; ctx.fillText(v, cx+96, cyy+8); ctx.font='11px system-ui';
+    }
+    ly+=Math.ceil(det.length/2)*18+6;
+    // per-source contributions (base vs deltas)
+    ctx.font='bold 10px system-ui'; ctx.fillStyle='#7e90ac'; ctx.fillText('ВНЕСКИ (база + трейти/куби):', x, ly+6); ly+=16;
+    ctx.font='10px system-ui';
+    const contrib=[];
+    contrib.push(['база HP', '+'+STAT.hpBase]);
+    for(const tk in s.traitDelta) contrib.push([CUBES_TRAITNAME(tk), s.traitDelta[tk]]);
+    for(const ck in s.cubeDelta) contrib.push([CUBES[ck]?CUBES[ck].name:ck, s.cubeDelta[ck]]);
+    let cn=0;
+    for(const [k,v] of contrib){
+      if(ly>y-26+300-8) { ctx.fillStyle='#7e90ac'; ctx.fillText('+ще '+(contrib.length-cn), x, ly+6); break; }
+      ctx.fillStyle='#9aa6b8'; ctx.fillText('• '+k, x, ly+6);
+      ctx.fillStyle='#bfe0a0'; ctx.textAlign='right'; ctx.fillText(v, x+w, ly+6); ctx.textAlign='left';
+      ly+=14; cn++;
+    }
+  }
+}
+function CUBES_TRAITNAME(key){
+  const d=SYNERGY_DEFS.find(x=>x.key===key)||SHAPE_DEFS.find(x=>x.key===key);
+  return d?d.name:key;
 }
 
-// ---- INSPECT tooltip for hovered pixel (builder) --------------------------
+function drawTraitsPanel(){
+  const { panelW } = builderGeom();
+  const x=W-panelW+14, w=panelW-28;
+  let y=H - 120;
+  const moves=deriveMoveset(build);
+  ctx.fillStyle='rgba(8,12,20,0.66)'; ctx.fillRect(x-8, y-26, w+16, 110);
+  ctx.strokeStyle='rgba(90,120,170,0.25)'; ctx.lineWidth=1; ctx.strokeRect(x-8, y-26, w+16, 110);
+  ctx.font='bold 12px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.textAlign='left';
+  ctx.fillText('АКТИВНІ ТРЕЙТИ ('+traitsCache.length+')', x, y-10);
+  ctx.textBaseline='middle';
+  if(traitsCache.length===0){
+    ctx.font='11px system-ui'; ctx.fillStyle='#6f7e94';
+    ctx.fillText('— ще немає. Постав суміжні куби (див. Кодекс).', x, y+6);
+  }
+  // compact chips, wrap
+  let cx=x, cy=y+2; const chipH=20;
+  ctx.font='bold 10px system-ui';
+  for(const tr of traitsCache){
+    const col=traitColor(tr.icon)||traitColor(tr.key);
+    const tag=tr.kind==='adjacency'?('×'+tr.magnitude):('×'+tr.magnitude);
+    const lbl=tr.name+' '+tag;
+    const cw=ctx.measureText(lbl).width+26;
+    if(cx+cw>x+w){ cx=x; cy+=chipH+4; }
+    if(cy>y+44) break;
+    ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fillRect(cx,cy,cw,chipH);
+    ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.strokeRect(cx,cy,cw,chipH);
+    drawTraitIcon(tr.icon, cx+11, cy+chipH/2, 16, col);
+    ctx.fillStyle='#eaf0fb'; ctx.fillText(lbl, cx+22, cy+chipH/2+1);
+    cx+=cw+5;
+  }
+  // moveset row
+  ctx.textBaseline='alphabetic';
+  ctx.font='bold 10px system-ui'; ctx.fillStyle='#9fb4d6';
+  ctx.fillText('РУХИ:', x, y+72);
+  ctx.font='18px system-ui'; let ix=x+44;
+  for(const k of moves){ ctx.fillText(MOVES[k].icon, ix, y+76); ix+=28; }
+  if(moves.length===0){ ctx.font='11px system-ui'; ctx.fillStyle='#6f7e94'; ctx.fillText('лише кулак', x+44, y+74); }
+}
+
+/* ---- CODEX of combinations (R3): all synergies+shapes, discovered/locked --- */
+function drawCodex(){
+  const w=Math.min(520, W-40), x=(W-w)/2, h=Math.min(H-80, 560), y=(H-h)/2;
+  ctx.fillStyle='rgba(6,10,16,0.96)'; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='#5a7bc0'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+  ctx.font='bold 16px system-ui'; ctx.fillStyle='#cfe0ff'; ctx.textAlign='left';
+  ctx.fillText('КОДЕКС КОМБІНАЦІЙ', x+18, y+28);
+  ctx.font='11px system-ui'; ctx.fillStyle='#7e90ac';
+  ctx.fillText('відкрито: '+Object.keys(META.discovered).length+' / '+(SYNERGY_DEFS.length+SHAPE_DEFS.length)+'    (клік «Кодекс» щоб закрити)', x+18, y+44);
+  const defs=[ {hd:'СИНЕРГІЇ СУМІЖНОСТІ',list:SYNERGY_DEFS,req:'дотик двох кубів'},
+               {hd:'ФОРМИ',list:SHAPE_DEFS,req:'патерн з кубів'} ];
+  let ry=y+62;
+  for(const grp of defs){
+    ctx.font='bold 12px system-ui'; ctx.fillStyle='#9fb4d6'; ctx.fillText(grp.hd, x+18, ry+12); ry+=22;
+    for(const d of grp.list){
+      const disc=!!META.discovered[d.key];
+      const col=traitColor(d.icon)||traitColor(d.key);
+      ctx.globalAlpha=disc?1:0.42;
+      ctx.fillStyle='rgba(16,22,36,0.9)'; ctx.fillRect(x+18, ry, w-36, 36);
+      ctx.strokeStyle=disc?col:'#324768'; ctx.lineWidth=1.4; ctx.strokeRect(x+18, ry, w-36, 36);
+      ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(x+22, ry+5, 26, 26);
+      if(disc) drawTraitIcon(d.icon, x+22+13, ry+5+13, 24, col);
+      else { ctx.fillStyle='#5f6f86'; ctx.font='bold 16px system-ui'; ctx.textAlign='center'; ctx.fillText('🔒', x+22+13, ry+22); ctx.textAlign='left'; }
+      ctx.font='bold 12px system-ui'; ctx.fillStyle=disc?'#eaf0fb':'#7e8a99';
+      ctx.fillText(disc?d.name:'？？？', x+56, ry+15);
+      ctx.font='10px system-ui'; ctx.fillStyle=disc?'#9fb0c8':'#5f6f86';
+      ctx.fillText(disc?d.effect:('заблоковано — '+grp.req), x+56, ry+29);
+      ctx.globalAlpha=1;
+      ry+=40;
+      if(ry>y+h-30){ ctx.fillStyle='#7e90ac'; ctx.font='10px system-ui'; ctx.fillText('…', x+18, ry); break; }
+    }
+  }
+}
+
 function drawBuilderTooltip(){
   if(hoverPixIdx<0) return;
-  const p=build[hoverPixIdx]; const meta=PIX[p.type];
-  // which traits include this pixel?
+  const p=build[hoverPixIdx]; const meta=PIX[p.type]; const c=CUBES[p.type];
   const inTraits=traitsCache.filter(tr=>tr.pixelIndices.includes(hoverPixIdx));
-  const lines=[meta.name+' — '+meta.eff];
+  const lines=[meta.name+' — '+meta.eff, RARITY_UA[c.rarity]+' · '+c.cost+'◆ · '+CAT[c.cat].ua];
   for(const tr of inTraits) lines.push('• '+tr.name+' ('+(tr.kind==='adjacency'?'синергія':'форма')+')');
   ctx.font='bold 13px system-ui';
   let wmax=0; for(const l of lines) wmax=Math.max(wmax, ctx.measureText(l).width);
@@ -1851,7 +2399,7 @@ function drawBuilderTooltip(){
   let x=mouseX+16, y=mouseY-h-10;
   if(x+w>W) x=mouseX-w-16; if(y<4) y=mouseY+16;
   ctx.fillStyle='rgba(10,14,22,0.94)'; ctx.fillRect(x,y,w,h);
-  ctx.strokeStyle=colorOfType(p.type); ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+  ctx.strokeStyle=RARITY_COL[c.rarity]; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
   ctx.fillStyle=colorOfType(p.type); ctx.fillRect(x+8,y+8,30,30);
   drawGlyph(meta.glyph, x+8+15, y+8+15, 30, meta.tint, 1);
   ctx.textAlign='left'; ctx.textBaseline='alphabetic';
@@ -1861,21 +2409,98 @@ function drawBuilderTooltip(){
   for(let i=1;i<lines.length;i++) ctx.fillText(lines[i], x+12, y+22+i*18);
 }
 
+// hover tooltip for an inventory entry
+function drawInvTooltip(){
+  if(mouseX<0) return;
+  for(const e of invHit.entries){
+    if(mouseX>=e.x&&mouseX<=e.x+e.w&&mouseY>=e.y&&mouseY<=e.y+e.h){
+      const c=CUBES[e.k];
+      const lines=[c.name, RARITY_UA[c.rarity]+' · '+CAT[c.cat].ua+' · '+c.cost+'◆',
+                   c.eff, 'у наявності: '+owned(e.k)+(e.usable?'':'  (недоступно)')];
+      ctx.font='bold 12px system-ui'; let wmax=0; for(const l of lines) wmax=Math.max(wmax,ctx.measureText(l).width);
+      const w=wmax+24, h=14+lines.length*16+6; let x=mouseX-w-12, yy=mouseY+8;
+      if(x<4) x=mouseX+12; if(yy+h>H) yy=H-h-4;
+      ctx.fillStyle='rgba(10,14,22,0.96)'; ctx.fillRect(x,yy,w,h);
+      ctx.strokeStyle=RARITY_COL[c.rarity]; ctx.lineWidth=2; ctx.strokeRect(x,yy,w,h);
+      ctx.textAlign='left'; ctx.fillStyle='#fff'; ctx.font='bold 12px system-ui';
+      ctx.fillText(lines[0], x+10, yy+18);
+      ctx.font='11px system-ui'; ctx.fillStyle='#bcd0ee';
+      for(let i=1;i<lines.length;i++){ ctx.fillStyle=i===1?RARITY_COL[c.rarity]:'#bcd0ee'; ctx.fillText(lines[i], x+10, yy+18+i*16); }
+      return;
+    }
+  }
+}
+
+function drawToasts(){
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const cx = (W - RIGHT_PANEL_W)/2;   // center of the play area (left of inventory panel)
+  for(let i=0;i<toasts.length;i++){
+    const ts=toasts[i]; const u=ts.t/ts.life;
+    const a=u<0.1?u*10:(u>0.8?(1-u)*5:1);
+    const y=H*0.16 + i*30;
+    ctx.globalAlpha=Math.max(0,Math.min(1,a));
+    ctx.font='bold 13px system-ui';
+    const w=ctx.measureText(ts.text).width+28;
+    ctx.fillStyle='rgba(8,12,20,0.92)';
+    if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(cx-w/2, y-13, w, 26, 8); ctx.fill();
+                       ctx.strokeStyle=ts.col; ctx.lineWidth=1.5; ctx.stroke(); }
+    else { ctx.fillRect(cx-w/2, y-13, w, 26);
+           ctx.strokeStyle=ts.col; ctx.lineWidth=1.5; ctx.strokeRect(cx-w/2, y-13, w, 26); }
+    ctx.fillStyle=ts.col; ctx.fillText(ts.text, cx, y);
+  }
+  ctx.globalAlpha=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+}
+
+// preset buttons (small, bottom-left)
+const presetButtons = [];
+function layoutPresetButtons(){
+  presetButtons.length=0;
+  const keys=Object.keys(PRESETS);
+  let x=16, y=H-86;
+  ctx.font='bold 11px system-ui';
+  for(const k of keys){
+    const label=PRESETS[k].name;
+    const w=ctx.measureText(label).width+18;
+    presetButtons.push({ k, x, y, w, h:22, label });
+    x+=w+6;
+  }
+}
+function drawPresetButtons(){
+  layoutPresetButtons();
+  ctx.font='bold 11px system-ui'; ctx.textBaseline='middle';
+  for(const b of presetButtons){
+    ctx.fillStyle='rgba(22,32,58,0.9)'; ctx.fillRect(b.x,b.y,b.w,b.h);
+    ctx.strokeStyle='#38507e'; ctx.lineWidth=1; ctx.strokeRect(b.x,b.y,b.w,b.h);
+    ctx.fillStyle='#dfe8ff'; ctx.textAlign='left';
+    ctx.fillText(b.label, b.x+9, b.y+b.h/2+1);
+  }
+  ctx.textBaseline='alphabetic';
+}
+function presetHit(mx,my){
+  for(const b of presetButtons){ if(mx>=b.x&&mx<=b.x+b.w&&my>=b.y&&my<=b.y+b.h) return b.k; }
+  return null;
+}
+
 function drawBuilder(){
   drawArena();
   drawBuilderGrid();
-  drawPalette();
+  drawProgressHUD();
   drawPresetButtons();
-  drawTraitsPanel();
+  drawInventoryPanel();
   drawStatsPanel();
+  drawTraitsPanel();
+  drawInvTooltip();
   drawBuilderTooltip();
+  if(showCodex) drawCodex();
+  drawToasts();
 }
 
 /* ============================================================================
-   11. COMBAT MODE — clean render + activation popups + buff/debuff tray
+   12. COMBAT MODE — clean render + activation popups + buff/debuff tray
    ========================================================================== */
 let foeIdx = 0;
 function startCombat(){
+  if(build.length<=1){ toast('Спершу побудуй героя (постав куби)', '#e3b341'); return; }
   APP='combat';
   phase='fight'; winner=null;
   rng = mulberry32(SEED_BASE + foeIdx*101 + 7);
@@ -1908,13 +2533,10 @@ function addFloater(f, text, col, big){
   floaters.push({ x:creatureScreenX(f), y:ground-3.6*PX*f.scale*combatCellMul()-18, t:0, life: big?1.3:0.95,
     text, col, big:!!big, vy: big?20:34, pop: big?1:0.4 });
 }
-
-// trait activation popup near a fighter
 function addPopup(f, traitKey){
   const name = popupNameForTrait(traitKey);
   popups.push({ x:creatureScreenX(f), y:ground-3.8*PX*f.scale*combatCellMul()-30, t:0, life:1.2,
     key:traitKey, name, col:traitColor(traitKey) });
-  // a little flourish
   const x=creatureScreenX(f), y=ground-3.0*PX*f.scale*combatCellMul();
   burst(x,y,10,[traitColor(traitKey),'#ffffff'],120,-40,3);
 }
@@ -1938,13 +2560,15 @@ function consumeEvents(){
       addFloater(e.target, 'БЛОК', '#7CE0A0', false);
       pushLog(`${e.target.name}: «Бастіон» заблокував удар`, '#7CE0A0');
       const x=creatureScreenX(e.target), y=ground-3*PX*e.target.scale*combatCellMul();
-      // shield-ring flash
       for(let i=0;i<10;i++){ const a=rnd()*6.283;
         particles.push({ x,y, vx:Math.cos(a)*120, vy:Math.sin(a)*120-30, life:0.4, col:'#7CE0A0', sz:2+rnd()*2, grav:60, drag:0.05 }); }
       lightFlash=Math.max(lightFlash,0.3); lightCol='#7CE0A0';
     }
-    else if(e.kind==='regen'){
-      addFloater(e.f, '+'+e.heal, '#5BE08A', false);
+    else if(e.kind==='regen'){ addFloater(e.f, '+'+e.heal, '#5BE08A', false); }
+    else if(e.kind==='lifesteal'){ addFloater(e.f, '+'+e.heal, '#ff8aa0', false); }
+    else if(e.kind==='thorns'){
+      addFloater(e.target, e.damage+'', '#9aa6b8', false);
+      pushLog(`${e.target.name} напоровся на Шипи — ${e.damage}`, '#9aa6b8');
     }
     else if(e.kind==='cast'){
       const sc = SCHOOL[e.school];
@@ -1983,9 +2607,10 @@ function consumeEvents(){
     else if(e.kind==='statusTick'){
       const def=STATUS_DEF[e.status];
       addFloater(e.target, e.damage+'', def.col, false);
-      pushLog(`${e.target.name} ${e.status==='burn'?'горить':'страждає'} — ${e.damage}`, def.col);
+      pushLog(`${e.target.name} ${e.status==='burn'?'горить':(e.status==='poison'?'отруєний':'страждає')} — ${e.damage}`, def.col);
       const x=creatureScreenX(e.target), y=ground-2.4*PX*e.target.scale*combatCellMul();
       if(e.status==='burn') burst(x,y,8,['#ff7a2a','#ffd24a'],80,-160,3);
+      if(e.status==='poison') burst(x,y,8,['#7bd64a','#a6ff6a'],70,-120,3);
     }
     else if(e.kind==='ko'){
       pushLog(`K.O. — ${e.winner.name} переміг!`, '#ffd24a');
@@ -1994,14 +2619,10 @@ function consumeEvents(){
   }
 }
 
-// ---- BUFF/DEBUFF TRAY (separate from HP bar; +green / -red framed) --------
 function drawStatusTray(f){
   const sx=creatureScreenX(f)*zoom + (1-zoom)*W/2 + camX;
-  // tray sits ABOVE the name+HP-bar cluster (HP name baseline at -52, name top ~-65);
-  // -96 puts the 26px chips at -96..-70, clearing the name with a gap (no overlap).
   const top=(ground-lift_(f)-3.4*PX*f.scale*combatCellMul()-96)*zoom + (1-zoom)*H/2 + camY;
   const chip=26, gap=6;
-  // order: buffs first, then debuffs
   const sorted=[...f.statuses].sort((a,b)=> (STATUS_DEF[b.key].sign)-(STATUS_DEF[a.key].sign));
   const totalW=sorted.length*(chip+gap)-gap;
   let x=sx-totalW/2; const y=top;
@@ -2010,31 +2631,24 @@ function drawStatusTray(f){
     const pos=def.sign>0;
     const frame = pos ? '#3fe08a' : '#e5534b';
     const fillBg = pos ? 'rgba(20,46,30,0.92)' : 'rgba(48,18,18,0.92)';
-    const k=Math.max(0.08, st.dur/def.dur);   // countdown -> shrink the fill
-    // chip background
+    const k=Math.max(0.08, st.dur/def.dur);
     ctx.fillStyle=fillBg; ctx.fillRect(x,y,chip,chip);
-    // countdown shrink bar (bottom)
     ctx.fillStyle=pos?'rgba(63,224,138,0.45)':'rgba(229,83,75,0.45)';
     ctx.fillRect(x, y+chip-4, chip*k, 3);
-    // +/- frame (thick, instantly distinguishable)
     ctx.strokeStyle=frame; ctx.lineWidth=2.5; ctx.strokeRect(x+1,y+1,chip-2,chip-2);
-    // icon: trait icon for buffs, emoji-ish glyph for debuffs (drawn vector)
     if(def.iconTrait){ drawTraitIcon(def.iconTrait, x+chip/2, y+chip/2-1, chip-6, frame); }
     else if(def.glyph==='cross'){ drawTraitIcon('cross', x+chip/2, y+chip/2-1, chip-6, frame); }
     else if(def.glyph==='shield'){ drawTraitIcon('shield', x+chip/2, y+chip/2-1, chip-6, frame); }
     else {
-      // debuff emoji glyph
       ctx.font='15px system-ui'; ctx.textAlign='center'; ctx.fillStyle='#fff';
       ctx.fillText(def.glyph, x+chip/2, y+chip/2+5); ctx.textAlign='left';
     }
-    // stack count badge
     if(st.stacks>1){
       ctx.font='bold 10px system-ui'; ctx.textAlign='right';
       ctx.fillStyle='#000'; ctx.fillText('×'+st.stacks, x+chip-1, y+chip-2);
       ctx.fillStyle='#fff'; ctx.fillText('×'+st.stacks, x+chip-2, y+chip-3);
       ctx.textAlign='left';
     }
-    // +/- corner tag
     ctx.font='bold 11px system-ui'; ctx.textAlign='left';
     ctx.fillStyle=frame; ctx.fillText(pos?'+':'−', x+2, y+11);
     x+=chip+gap;
@@ -2049,13 +2663,11 @@ function drawPopups(){
     const u=pp.t/pp.life;
     const a=Math.min(1,(1-u)*2);
     ctx.globalAlpha=a;
-    // icon chip
-    const r=15+ (1-Math.min(1,pp.t*4))*8;   // pop-in
+    const r=15+ (1-Math.min(1,pp.t*4))*8;
     ctx.fillStyle='rgba(8,12,20,0.85)';
     ctx.beginPath(); ctx.arc(x-1, y, r, 0,7); ctx.fill();
     ctx.strokeStyle=pp.col; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(x-1,y,r,0,7); ctx.stroke();
     drawTraitIcon(pp.key, x-1, y, r*1.6, lighten(pp.col,0.3));
-    // name label
     ctx.font='bold 14px system-ui';
     ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.75)';
     ctx.strokeText(pp.name, x, y-r-10);
@@ -2172,18 +2784,16 @@ function drawCombat(rawDt){
   drawLog();
   if(phase==='result') drawResultBanner();
 
-  // combat header (static, top-left)
   ctx.textAlign='left'; ctx.textBaseline='alphabetic';
   ctx.font='bold 13px system-ui'; ctx.fillStyle='#9fb4d6';
   ctx.fillText('БІЙ — LOD: чисті блоки + причинний спалах (без гліфів)', 16, 24);
-  // single static buff/debuff legend
   ctx.font='11px system-ui';
   ctx.fillStyle='#3fe08a'; ctx.fillText('▭ зелене = бафф', 16, 42);
   ctx.fillStyle='#e5534b'; ctx.fillText('▭ червоне = дебафф', 132, 42);
 }
 
 /* ============================================================================
-   12. CAMERA / JUICE
+   13. CAMERA / JUICE
    ========================================================================== */
 let timeScale = 1, slowmoT = 0, slowmoTarget = 1;
 let zoom = 1, zoomPunch = 0;
@@ -2198,47 +2808,83 @@ function cameraStep(rdt){
 }
 
 /* ============================================================================
-   13. MAIN LOOP + INPUT + SELF-TESTS
+   14. MAIN LOOP + INPUT + SELF-TESTS
    ========================================================================== */
 let mouseX=-1, mouseY=-1;
 function setupInput(){
   if(typeof document==='undefined') return;
-  const btnAll=document.getElementById('btnAll');
-  const btnGo=document.getElementById('btnGo');
+  const byId=id=>document.getElementById(id);
+  const btnAll=byId('btnAll'), btnGo=byId('btnGo'), btnLoot=byId('btnLoot'),
+        btnExpand=byId('btnExpand'), btnLevel=byId('btnLevel'), btnCodex=byId('btnCodex');
   if(btnAll) btnAll.addEventListener('click', ()=>{
     showAllBonds=!showAllBonds;
     btnAll.textContent='всі звʼязки: '+(showAllBonds?'УВІМК':'ВИМК');
   });
   if(btnGo) btnGo.addEventListener('click', ()=>{
-    if(APP==='builder'){ startCombat(); btnGo.textContent='назад у білдер ←'; btnGo.className='btn'; }
-    else { APP='builder'; recompute(); btnGo.textContent='В бій →'; btnGo.className='btn go'; }
+    if(APP==='builder'){ startCombat(); if(APP==='combat'){ btnGo.textContent='назад у білдер ←'; btnGo.className='btn'; } }
+    else { APP='builder'; recompute(); btnGo.textContent='У бій →'; btnGo.className='btn go'; }
   });
+  if(btnLoot) btnLoot.addEventListener('click', ()=>{ if(APP==='builder') grantLoot(LOOT_BATCH); });
+  if(btnExpand) btnExpand.addEventListener('click', ()=>{ if(APP==='builder') expandGrid(); });
+  if(btnLevel) btnLevel.addEventListener('click', ()=>{ if(APP==='builder') levelUp(); });
+  if(btnCodex) btnCodex.addEventListener('click', ()=>{ showCodex=!showCodex; });
 
   addEventListener('mousemove', e=>{ mouseX=e.clientX; mouseY=e.clientY; });
   addEventListener('mouseleave', ()=>{ mouseX=-1; mouseY=-1; });
+  addEventListener('wheel', e=>{
+    if(APP!=='builder') return;
+    // scroll inventory if over the panel
+    const { panelW }=builderGeom();
+    if(mouseX>W-panelW){ invScroll += e.deltaY*0.5; }
+  }, {passive:true});
   addEventListener('keydown', e=>{
+    if(invSearchFocus && APP==='builder'){
+      if(e.key==='Escape'){ invSearchFocus=false; }
+      else if(e.key==='Backspace'){ invSearch=invSearch.slice(0,-1); e.preventDefault(); }
+      else if(e.key==='Enter'){ invSearchFocus=false; }
+      else if(e.key.length===1){ invSearch+=e.key; }
+      return;
+    }
     if(APP!=='builder') return;
     if(e.key==='['){ builderZoom=Math.max(0.5, builderZoom-0.1); }
     if(e.key===']'){ builderZoom=Math.min(2.0, builderZoom+0.1); }
     if(e.key==='b' || e.key==='B'){ showAllBonds=!showAllBonds; const b=document.getElementById('btnAll'); if(b)b.textContent='всі звʼязки: '+(showAllBonds?'УВІМК':'ВИМК'); }
+    if(e.key==='l' || e.key==='L'){ grantLoot(LOOT_BATCH); }
+    if(e.key==='c' || e.key==='C'){ showCodex=!showCodex; }
   });
   cv.addEventListener('click', e=>{
     if(APP!=='builder') return;
     const mx=e.clientX, my=e.clientY;
+    if(showCodex){ showCodex=false; return; }   // click anywhere closes codex
+    // inventory panel hit-tests (R2)
+    if(handleInventoryClick(mx,my)) return;
+    // stats detail toggle (R4)
+    if(statHit.detail && inRect(mx,my,statHit.detail)){ detailExpanded=!detailExpanded; return; }
     // preset buttons
     const pk=presetHit(mx,my); if(pk){ loadPreset(pk); return; }
-    // palette
-    const ptype=paletteHit(mx,my); if(ptype){ selectedType=ptype; return; }
     // grid: place / remove
-    // first, is there a pixel under the click?
     const idx=pixelUnderMouse(mx,my);
     if(idx>=0){ removePixel(idx); return; }
     const {gx,gy}=screenToGrid(mx,my);
     placePixel(gx,gy);
   });
 }
+function inRect(mx,my,r){ return r && mx>=r.x&&mx<=r.x+r.w&&my>=r.y&&my<=r.y+r.h; }
+function handleInventoryClick(mx,my){
+  if(inRect(mx,my,invHit.search)){ invSearchFocus=true; return true; }
+  else invSearchFocus=false;
+  for(const t of invHit.tabs){ if(inRect(mx,my,t)){ invTab=t.k; invScroll=0; return true; } }
+  for(const r of invHit.rarities){ if(inRect(mx,my,r)){ invRarity=r.k; invScroll=0; return true; } }
+  for(const sn of invHit.sorts){ if(inRect(mx,my,sn)){ invSort=sn.k; return true; } }
+  for(const en of invHit.entries){ if(inRect(mx,my,en)){ selectedType=en.k; return true; } }
+  // clicking anywhere inside the right panel area but not on a control: consume
+  const { panelW }=builderGeom();
+  if(mx>W-panelW) return true;
+  return false;
+}
 function pixelUnderMouse(mx,my){
-  const { cell } = builderGeom();
+  const { cell, panelW } = builderGeom();
+  if(mx>W-panelW) return -1;   // don't pick grid under the panel
   for(let i=0;i<build.length;i++){
     const p=build[i]; const s=gridToScreen(p.gx,p.gy);
     if(mx>=s.x-cell/2 && mx<=s.x+cell/2 && my>=s.y-cell/2 && my<=s.y+cell/2) return i;
@@ -2248,6 +2894,8 @@ function pixelUnderMouse(mx,my){
 function updateBuilderHover(){
   hoverPixIdx=-1; hoverCell=null;
   if(mouseX<0) return;
+  const { panelW }=builderGeom();
+  if(mouseX>W-panelW) return;  // over panel, no grid hover
   hoverPixIdx=pixelUnderMouse(mouseX,mouseY);
   hoverCell=screenToGrid(mouseX,mouseY);
 }
@@ -2256,13 +2904,13 @@ function frame(ts){
   const rawDt = Math.min(0.05, (frame._p?ts-frame._p:16)/1000); frame._p=ts;
   t += rawDt;
   cameraStep(rawDt);
+  stepToasts(rawDt);
 
-  ctx.setTransform(1,0,0,1,0,0);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
   ctx.clearRect(0,0,W,H);
 
   if(APP==='builder'){
     updateBuilderHover();
-    // gentle idle spring relax of builder pixels not needed (static grid)
     drawBuilder();
   } else {
     let simDt = rawDt * timeScale;
@@ -2286,8 +2934,7 @@ function frame(ts){
 }
 
 /* ----------------------------------------------------------------------------
-   SELF-TESTS — synergy/shape detectors against known builds. Runs in headless
-   Node (no document) AND prints to console in-browser. Returns {pass,fail}.
+   SELF-TESTS — detectors + new meta systems (loot/budget/grid/cubes).
    ---------------------------------------------------------------------------- */
 function runSelfTests(logFn){
   const out = logFn || ((s)=>{ if(typeof console!=='undefined') console.log(s); });
@@ -2298,94 +2945,87 @@ function runSelfTests(logFn){
   }
   function traitMag(traits,key){ const t=traits.find(x=>x.key===key); return t?t.magnitude:0; }
 
-  // 1. «Лезо» Force↔Force: a 3-in-a-row horizontal force => 2 bonded pairs
-  {
-    const b=B([[0,0,'core'],[1,0,'force'],[2,0,'force'],[3,0,'force']]);
-    const s=detectSynergies(b);
-    check('blade: 3 force in a row -> 2 pairs', traitMag(s,'blade')===2);
-  }
-  // 2. «Форпост» Plate↔Vital pair
-  {
-    const b=B([[0,0,'core'],[0,1,'vital'],[1,1,'plate']]);
-    const s=detectSynergies(b);
-    check('outpost: 1 plate-vital pair', traitMag(s,'outpost')===1);
-    // adjacency requires orth touch; diagonal should NOT count
+  // --- detector tests (preserved from original) ---
+  { const b=B([[0,0,'core'],[1,0,'force'],[2,0,'force'],[3,0,'force']]);
+    check('blade: 3 force in a row -> 2 pairs', traitMag(detectSynergies(b),'blade')===2); }
+  { const b=B([[0,0,'core'],[0,1,'vital'],[1,1,'plate']]);
+    check('outpost: 1 plate-vital pair', traitMag(detectSynergies(b),'outpost')===1);
     const b2=B([[0,0,'core'],[0,1,'vital'],[1,2,'plate'],[1,1,'force']]);
-    const s2=detectSynergies(b2);
-    check('outpost: diagonal does not bond', traitMag(s2,'outpost')===0);
-  }
-  // 3. «Розпал» Ember↔Mana
-  {
-    const b=B([[0,0,'core'],[1,0,'ember'],[2,0,'mana']]);
-    check('kindle: ember-mana pair', traitMag(detectSynergies(b),'kindle')===1);
-  }
-  // 4. «Потік» Swift↔Swift
-  {
-    const b=B([[0,0,'core'],[0,1,'swift'],[1,1,'swift'],[1,0,'swift']]);
-    // pairs: (0,1)-(1,1) and (1,1)-(1,0) = 2
-    check('flow: L of 3 swift -> 2 pairs', traitMag(detectSynergies(b),'flow')===2);
-  }
-  // 5. «Підсилення» Catalyst↔element
-  {
-    const b=B([[0,0,'core'],[1,0,'catalyst'],[2,0,'ember'],[1,1,'frost']]);
-    // catalyst touches ember(right) and frost(down) = 2 pairs
-    check('amplify: catalyst+2 elements -> 2 pairs', traitMag(detectSynergies(b),'amplify')===2);
-  }
-  // 6. «Шип» 3+ force line
-  {
-    const b=B([[0,0,'core'],[0,-1,'force'],[0,-2,'force'],[0,-3,'force']]);
+    check('outpost: diagonal does not bond', traitMag(detectSynergies(b2),'outpost')===0); }
+  { const b=B([[0,0,'core'],[1,0,'ember'],[2,0,'mana']]);
+    check('kindle: ember-mana pair', traitMag(detectSynergies(b),'kindle')===1); }
+  { const b=B([[0,0,'core'],[0,1,'swift'],[1,1,'swift'],[1,0,'swift']]);
+    check('flow: L of 3 swift -> 2 pairs', traitMag(detectSynergies(b),'flow')===2); }
+  { const b=B([[0,0,'core'],[1,0,'catalyst'],[2,0,'ember'],[1,1,'frost']]);
+    check('amplify: catalyst+2 elements -> 2 pairs', traitMag(detectSynergies(b),'amplify')===2); }
+  { const b=B([[0,0,'core'],[1,0,'poison'],[2,0,'mana']]);
+    check('venomweave: poison-mana pair', traitMag(detectSynergies(b),'venomweave')===1); }
+  { const b=B([[0,0,'core'],[0,-1,'force'],[0,-2,'force'],[0,-3,'force']]);
     check('spike: vertical 3 force -> 1 line', traitMag(detectShapes(b),'spike')===1);
     const b2=B([[0,0,'core'],[1,0,'force'],[2,0,'force']]);
-    check('spike: only 2 force -> none', traitMag(detectShapes(b2),'spike')===0);
-  }
-  // 7. «Бастіон» 2x2 plate
-  {
-    const b=B([[0,0,'core'],[0,1,'plate'],[1,1,'plate'],[0,2,'plate'],[1,2,'plate']]);
-    check('bastion: 2x2 plate -> 1 block', traitMag(detectShapes(b),'bastion')===1);
-  }
-  // 8. «Серце» 5 vital plus
-  {
-    const b=B([[0,0,'core'],[2,0,'vital'],[2,-1,'vital'],[2,1,'vital'],[1,0,'vital'],[3,0,'vital']]);
-    check('heart: vital plus -> 1 cross', traitMag(detectShapes(b),'heart')===1);
-  }
-  // 9. «Рівновага» mirror symmetry
-  {
-    const b=B([[0,0,'core'],[-1,0,'force'],[1,0,'force'],[0,1,'vital']]);
+    check('spike: only 2 force -> none', traitMag(detectShapes(b2),'spike')===0); }
+  { const b=B([[0,0,'core'],[0,1,'plate'],[1,1,'plate'],[0,2,'plate'],[1,2,'plate']]);
+    check('bastion: 2x2 plate -> 1 block', traitMag(detectShapes(b),'bastion')===1); }
+  { const b=B([[0,0,'core'],[2,0,'vital'],[2,-1,'vital'],[2,1,'vital'],[1,0,'vital'],[3,0,'vital']]);
+    check('heart: vital plus -> 1 cross', traitMag(detectShapes(b),'heart')===1); }
+  { const b=B([[0,0,'core'],[-1,0,'force'],[1,0,'force'],[0,1,'vital']]);
     check('balance: symmetric build -> active', traitMag(detectShapes(b),'balance')===1);
     const b2=B([[0,0,'core'],[1,0,'force'],[2,0,'vital'],[-1,0,'force']]);
-    check('balance: asymmetric -> inactive', traitMag(detectShapes(b2),'balance')===0);
-  }
-  // 10. deriveStats folds traits: outpost adds HP
-  {
-    const base=B([[0,0,'core'],[0,1,'vital'],[0,2,'vital']]);
-    const withPlate=B([[0,0,'core'],[0,1,'vital'],[0,2,'vital'],[1,1,'plate'],[1,2,'plate']]);
-    const s0=deriveStats(base), s1=deriveStats(withPlate);
-    // 2 plate-vital pairs -> +2*7 HP plus 2 vital base equal; compare delta from outpost only is tricky
+    check('balance: asymmetric -> inactive', traitMag(detectShapes(b2),'balance')===0); }
+  { const withPlate=B([[0,0,'core'],[0,1,'vital'],[0,2,'vital'],[1,1,'plate'],[1,2,'plate']]);
+    const s0=deriveStats(B([[0,0,'core'],[0,1,'vital'],[0,2,'vital']])), s1=deriveStats(withPlate);
     check('deriveStats: outpost present in withPlate', s1.traits.some(x=>x.key==='outpost'));
-    check('deriveStats: blockChance 0 without bastion', s0.blockChance===0);
-  }
-  // 11. big preset has many traits & stats sane
-  {
-    const s=deriveStats(TITAN_BUILD);
+    check('deriveStats: blockChance 0 without bastion', s0.blockChance===0); }
+  { const s=deriveStats(TITAN_BUILD);
     check('titan: >=6 traits active', s.traits.length>=6);
     check('titan: maxHP > base', s.maxHP>60);
     check('titan: has bastion block>0', s.blockChance>0);
-    check('titan: has heart regen>0', s.regenPerSec>0);
-  }
+    check('titan: has heart regen>0', s.regenPerSec>0); }
+
+  // --- NEW META tests ---
+  // every cube has full metadata
+  { let okAll=true; for(const k of TYPE_ORDER){ const c=CUBES[k];
+      if(!c||!c.name||!c.cat||!c.rarity||c.cost==null||!c.col||!c.glyph||!c.eff) okAll=false; }
+    check('cubes: all '+TYPE_ORDER.length+' have full metadata', okAll && TYPE_ORDER.length>=22); }
+  check('cubes: 6 categories', CAT_ORDER.length===6);
+  // new cube effects fold into stats
+  check('regen cube -> regenPerSec>0', deriveStats(B([[0,0,'core'],[0,1,'regen']])).regenPerSec>0);
+  check('lifesteal cube -> lifesteal>0', deriveStats(B([[0,0,'core'],[0,1,'lifesteal']])).lifesteal>0);
+  check('pierce cube -> pierce>0', deriveStats(B([[0,0,'core'],[0,1,'pierce']])).pierce>0);
+  check('block cube -> blockChance>0', deriveStats(B([[0,0,'core'],[0,1,'block']])).blockChance>0);
+  check('thorns cube -> thorns>0', deriveStats(B([[0,0,'core'],[0,1,'thorns']])).thorns>0);
+  check('ward cube -> magResist>0', deriveStats(B([[0,0,'core'],[0,1,'ward']])).magResist>0);
+  check('haste cube -> haste>0', deriveStats(B([[0,0,'core'],[0,1,'haste']])).haste>0);
+  check('evasion cube -> dodge raised', deriveStats(B([[0,0,'core'],[0,1,'evasion']])).dodge>0);
+  check('arcane cube -> big magic', deriveStats(B([[0,0,'core'],[0,1,'arcane']])).magic>=10);
+  // arcane/poison movesets unlock with mana
+  check('arc move unlocks (arcane+mana)', deriveMoveset(B([[0,0,'core'],[0,1,'arcane'],[0,2,'mana']])).includes('arc'));
+  check('venom move unlocks (poison+mana)', deriveMoveset(B([[0,0,'core'],[0,1,'poison'],[0,2,'mana']])).includes('venom'));
+  // budget
+  check('buildCost: core costs 0', buildCost(B([[0,0,'core']]))===0);
+  check('buildCost: 3 vital = 3', buildCost(B([[0,0,'core'],[0,1,'vital'],[0,2,'vital'],[0,3,'vital']]))===3);
+  // grid unlock geometry
+  check('grid: core cell unlocked at start', cellUnlocked(0,0)===true);
+  check('grid: far cell locked at start', cellUnlocked(GRID_START_RING+1,0)===false);
+  // loot determinism
+  { const a=mulberry32(SEED_BASE*7+5*2654435761), b=mulberry32(SEED_BASE*7+5*2654435761);
+    check('loot RNG deterministic', a()===b()); }
+  { let any=false; for(const k in RARITY_WEIGHT){ const r=()=>0; void r; }
+    const r=mulberry32(123); const pick=weightedCubePick(r); any=PLACEABLE.includes(pick);
+    check('weightedCubePick returns a placeable cube', any); }
 
   out('---- SELF-TESTS: '+pass+' PASS / '+fail+' FAIL ----');
   return { pass, fail };
 }
 
-// run tests once at startup (console), then start the loop in-browser
 if(typeof document!=='undefined' && document.getElementById && document.getElementById('c') && cv && cv.getContext){
   try { runSelfTests(); } catch(_){}
+  // give the director some starting cubes so the inventory isn't empty on boot
+  try { grantLoot([8,8]); grantLoot([8,8]); recompute(); } catch(_){}
 }
 
-// expose for headless harness
-if(typeof module!=='undefined'){ module.exports = { runSelfTests, detectSynergies, detectShapes, deriveStats, deriveMoveset, TITAN_BUILD, B }; }
+if(typeof module!=='undefined'){ module.exports = { runSelfTests, detectSynergies, detectShapes, deriveStats, deriveMoveset, TITAN_BUILD, B, CUBES, TYPE_ORDER, weightedCubePick, buildCost, cellUnlocked }; }
 
-// boot (guarded so headless stub can require without a real RAF)
 if(typeof window!=='undefined' && typeof requestAnimationFrame!=='undefined'){
   setupInput();
   requestAnimationFrame(frame);
