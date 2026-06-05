@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PocketHero — POC: 3 візуальні підходи</title>
+<style>
+  :root{ --bg:#0b0e13; --panel:#11161f; --line:#222c3a; --txt:#dde3ec; --dim:#9aa6b6; --accent:#e0483f; }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,Segoe UI,sans-serif}
+  header{padding:18px 22px 6px}
+  header h1{margin:0;font-size:20px}
+  header p{margin:6px 0 0;color:var(--dim);font-size:14px;max-width:900px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;padding:14px 18px 26px}
+  @media(max-width:1000px){ .grid{grid-template-columns:1fr} }
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+  .card h2{margin:0;padding:12px 14px 4px;font-size:16px}
+  .card .sub{padding:0 14px 10px;color:var(--dim);font-size:13px;min-height:34px}
+  .frame{position:relative;width:100%;aspect-ratio:4/3;background:#000;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+  .meta{padding:10px 14px 14px;font-size:12.5px;line-height:1.5}
+  .meta .row{display:flex;gap:8px;margin:2px 0}
+  .k{width:64px;color:var(--dim);flex:none}
+  .good{color:#7fd18b}.bad{color:#e08a7f}
+  .open{display:inline-block;margin:8px 14px 14px;color:var(--accent);font-size:13px;text-decoration:none}
+  .open:hover{text-decoration:underline}
+  .note{padding:0 22px 28px;color:var(--dim);font-size:13px;max-width:900px}
+</style>
+</head>
+<body>
+<header>
+  <h1>PocketHero — порівняння візуальних підходів</h1>
+  <p>Одна й та сама піксельна істота (з червоним «атакуючим» шипом уперед) б'ється трьома способами рендеру.
+     Дивись на <b>відчуття бою й простору</b>, не на красу — арт чорновий. Усі три — чистий код, без бібліотек.</p>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <h2>1 · 2.5D billboard</h2>
+    <div class="sub">Пласкі бійці на об'ємній арені</div>
+    <div class="frame"><iframe src="billboard-2_5d.html" title="2.5D"></iframe></div>
+    <div class="meta">
+      <div class="row"><span class="k">Простір</span><span>підбіг із глибини, нокбек углиб, тінь, масштаб</span></div>
+      <div class="row"><span class="k good">+</span><span>простий 2D-білдер, soft-body jiggle, найменше багів</span></div>
+      <div class="row"><span class="k bad">−</span><span>істота лишається пласкою (камеру не покрутиш)</span></div>
+    </div>
+    <a class="open" href="billboard-2_5d.html" target="_blank">відкрити окремо ↗</a>
+  </div>
+
+  <div class="card">
+    <h2>2 · Sprite-stacking</h2>
+    <div class="sub">Пласка форма, екструдована в товщину</div>
+    <div class="frame"><iframe src="sprite-stacking.html" title="stacking"></iframe></div>
+    <div class="meta">
+      <div class="row"><span class="k">Простір</span><span>псевдо-обертання, але об'єм = «дошка»</span></div>
+      <div class="row"><span class="k good">+</span><span>дешевий об'ємний вайб із 2D-даних</span></div>
+      <div class="row"><span class="k bad">−</span><span>довільна форма виглядає як слеб, не як істота</span></div>
+    </div>
+    <a class="open" href="sprite-stacking.html" target="_blank">відкрити окремо ↗</a>
+  </div>
+
+  <div class="card">
+    <h2>3 · Справжній воксель 3D</h2>
+    <div class="sub">Обертова камера, об'ємні створіння</div>
+    <div class="frame"><iframe src="voxel-3d.html" title="voxel"></iframe></div>
+    <div class="meta">
+      <div class="row"><span class="k">Простір</span><span>повний 3D-об'єм, камера літає, уламки в об'ємі</span></div>
+      <div class="row"><span class="k good">+</span><span>максимальний «вау», глибина бою справжня</span></div>
+      <div class="row"><span class="k bad">−</span><span>білдер стає 3D, більше рухомих частин = більше багів</span></div>
+    </div>
+    <a class="open" href="voxel-3d.html" target="_blank">відкрити окремо ↗</a>
+  </div>
+</div>
+
+<div class="note">
+  Як читати: <b>2.5D</b> — найбезпечніший і вже дає простір для бою; <b>stacking</b> радше показує, чому він нам не пасує;
+  <b>воксель</b> — найефектніший, але це інша, важча гра (і інший конструктор). Скажи, що «відчувається» правильно — далі будуємо дизайн навколо обраного.
+</div>
+</body>
+</html>

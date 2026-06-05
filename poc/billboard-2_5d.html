@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>POC — 2.5D billboard</title>
+<style>
+  html,body{margin:0;height:100%;background:#0e1116;overflow:hidden;font-family:system-ui,sans-serif}
+  #c{display:block;width:100%;height:100%}
+  #tag{position:fixed;left:10px;top:8px;color:#cfd6e0;font-size:13px;opacity:.85;
+       background:#0008;padding:4px 8px;border-radius:6px;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="tag">2.5D · пласкі бійці на об'ємній арені</div>
+<script>
+// ---- shared creature ----
+const PAL = { body:'#8a8f98', attack:'#e0483f', armor:'#4a78c8', core:'#f2c14e', leg:'#6b7079' };
+const SHAPE = [
+  [0,0,'core'],
+  [-1,0,'body'],[0,1,'body'],[-1,1,'body'],[1,1,'body'],
+  [-1,2,'body'],[0,2,'body'],[1,2,'body'],
+  [-2,1,'armor'],[-2,2,'armor'],
+  [1,0,'attack'],[2,0,'attack'],[3,0,'attack'],
+  [-1,3,'leg'],[1,3,'leg'],
+];
+const PX = 13;
+
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W, H, ground;
+function resize(){ W = cv.width = innerWidth; H = cv.height = innerHeight; ground = H*0.72; }
+addEventListener('resize', resize); resize();
+
+function makeCreature(homeX, face, enemyTint){
+  const px = SHAPE.map(([x,y,t])=>({ gx: face*x, gy:y, t, ox:0,oy:0,vx:0,vy:0 }));
+  return { homeX, face, px, advance:0, knock:0, knockV:0, enemyTint };
+}
+let A = makeCreature(W*0.30, 1, false);
+let B = makeCreature(W*0.70, -1, true);
+
+function colorOf(c, t){
+  if(!c.enemyTint) return PAL[t];
+  // enemy: shift core to purple, body cooler
+  if(t==='core') return '#b06bd6';
+  if(t==='attack') return '#e0483f';
+  return PAL[t];
+}
+
+const K=240, D=15;          // spring
+let phase='idle', pt=0, attacker=A, defender=B, hitDone=false;
+let shake=0, hitstop=0, t=0;
+const debris=[];
+
+function setPhase(p){ phase=p; pt=0; hitDone=false; }
+function swap(){ const x=attacker; attacker=defender; defender=x; }
+
+function hit(){
+  // knockback the defender + into depth, spring it back
+  const dir = Math.sign(defender.homeX - attacker.homeX) || 1;
+  defender.knockV += dir*420;
+  // jiggle every pixel of defender
+  for(const p of defender.px){ p.vx += dir*260 + (Math.random()-.5)*120; p.vy += (Math.random()-.7)*160; }
+  // debris: a few pixels fly off
+  const cx = defender.homeX + defender.knock, cy = ground - 2*PX;
+  for(let i=0;i<4;i++){
+    const pk = defender.px[(Math.random()*defender.px.length)|0];
+    debris.push({ x: cx + pk.gx*PX, y: cy + pk.gy*PX,
+      vx: dir*(120+Math.random()*180), vy: -(120+Math.random()*220),
+      c: colorOf(defender, pk.t), life: .9+Math.random()*.4 });
+  }
+  shake = 9; hitstop = 0.06;
+}
+
+function update(rdt){
+  t += rdt;
+  if(hitstop>0){ hitstop -= rdt; return; }
+  const dt = Math.min(rdt, 0.033);
+  pt += dt;
+
+  // phase machine
+  if(phase==='idle' && pt>0.8) setPhase('approach');
+  else if(phase==='approach' && pt>0.45) setPhase('strike');
+  else if(phase==='strike'){
+    if(!hitDone && pt>0.11){ hit(); hitDone=true; }
+    if(pt>0.24) setPhase('recoil');
+  }
+  else if(phase==='recoil' && pt>0.55){ swap(); setPhase('idle'); }
+
+  // advance (attacker steps toward enemy during approach+strike)
+  const want = (phase==='approach') ? 0.7 : (phase==='strike') ? 1 : 0;
+  attacker.advance += ((want* (Math.abs(defender.homeX-attacker.homeX)-3.4*PX)) - attacker.advance) * Math.min(1,9*dt);
+  defender.advance += (0 - defender.advance) * Math.min(1,9*dt);
+
+  // springs (per-pixel jiggle) for both
+  for(const c of [A,B]){
+    for(const p of c.px){
+      const ax=-K*p.ox - D*p.vx, ay=-K*p.oy - D*p.vy;
+      p.vx+=ax*dt; p.vy+=ay*dt; p.ox+=p.vx*dt; p.oy+=p.vy*dt;
+    }
+    // knock spring
+    const ka = -34*c.knock - 7.5*c.knockV;
+    c.knockV += ka*dt; c.knock += c.knockV*dt;
+  }
+
+  // debris
+  for(let i=debris.length-1;i>=0;i--){ const d=debris[i];
+    d.vy += 900*dt; d.x+=d.vx*dt; d.y+=d.vy*dt; d.life-=dt;
+    if(d.y>ground){ d.y=ground; d.vy*=-0.35; d.vx*=0.6; }
+    if(d.life<=0) debris.splice(i,1);
+  }
+  shake *= Math.pow(0.0001, dt);
+}
+
+function drawArena(){
+  // sky
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#11161f'); g.addColorStop(.7,'#161d28'); g.addColorStop(1,'#0c1017');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // floor with perspective
+  ctx.fillStyle='#1b2330';
+  ctx.beginPath();
+  ctx.moveTo(W*0.5-40, ground); ctx.lineTo(W*0.5+40, ground);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle='#243044'; ctx.lineWidth=1;
+  for(let i=1;i<7;i++){ const y=ground+(H-ground)*(i/7); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+}
+
+function depthScale(c){ // further back (more knock away) -> slightly smaller & higher
+  const back = Math.max(0, c.knock * c.face); // pushed away from center
+  return 1 - Math.min(0.18, back*0.0016);
+}
+
+function drawCreature(c){
+  const s = depthScale(c);
+  const sx = c.homeX + c.face*c.advance + c.knock;
+  const lift = (1-s)*120;                // moving "back" lifts on screen
+  const breath = 1 + 0.03*Math.sin(t*2.6 + (c.face>0?0:1.5));
+  const baseY = ground - lift;
+  // shadow
+  ctx.fillStyle='rgba(0,0,0,0.35)';
+  ctx.beginPath(); ctx.ellipse(sx, ground+2, 34*s, 9*s, 0,0,7); ctx.fill();
+  // pixels
+  for(const p of c.px){
+    const x = sx + (p.gx*PX + p.ox)*s;
+    const y = baseY - (3.2*PX) + ((p.gy*PX)*breath + p.oy)*s;  // anchor feet near ground
+    ctx.fillStyle = colorOf(c, p.t);
+    const w = PX*s + 0.6;
+    ctx.fillRect(x - w/2, y - w/2, w, w);
+    // subtle top highlight
+    ctx.fillStyle='rgba(255,255,255,0.10)';
+    ctx.fillRect(x - w/2, y - w/2, w, Math.max(1,w*0.18));
+  }
+}
+
+function frame(ts){
+  const rdt = Math.min(0.05, (frame._p?ts-frame._p:16)/1000); frame._p=ts;
+  update(rdt);
+  ctx.save();
+  ctx.translate((Math.random()-.5)*shake, (Math.random()-.5)*shake);
+  drawArena();
+  // draw far-to-near by screen y
+  const order = [A,B].sort((p,q)=> depthScale(p)-depthScale(q));
+  for(const c of order) drawCreature(c);
+  for(const d of debris){ ctx.fillStyle=d.c; ctx.globalAlpha=Math.min(1,d.life*2); ctx.fillRect(d.x-3,d.y-3,6,6); ctx.globalAlpha=1; }
+  ctx.restore();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
