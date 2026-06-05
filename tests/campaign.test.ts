@@ -397,9 +397,10 @@ describe('load — old save tolerance', () => {
     expect(loaded.campaign).toEqual({ level: 1, stage: 0 });
   });
 
-  it('preserves existing coins if present in save', () => {
+  it('preserves existing coins if present in a current-version save', () => {
     const storage = makeStorage();
     storage.setItem('pockethero.save', JSON.stringify({
+      __v: 3, // current save version — pre-version saves reset to default
       level: 2, xp: 0, essence: 0,
       inventory: {}, heroBuild: [{ gx: 0, gy: 0, type: 'core' }],
       coins: 75, campaign: { level: 2, stage: 3 },
@@ -407,6 +408,18 @@ describe('load — old save tolerance', () => {
     const loaded = load(storage);
     expect(loaded.coins).toBe(75);
     expect(loaded.campaign).toEqual({ level: 2, stage: 3 });
+  });
+
+  it('resets a pre-version save (no __v) to the default starter', () => {
+    const storage = makeStorage();
+    storage.setItem('pockethero.save', JSON.stringify({
+      level: 9, xp: 0, essence: 0, inventory: {},
+      heroBuild: [{ gx: 0, gy: 0, type: 'core' }], coins: 999, campaign: { level: 2, stage: 8 },
+    }));
+    const loaded = load(storage);
+    expect(loaded.level).toBe(1);
+    expect(loaded.coins).toBe(0);
+    expect(loaded.campaign).toEqual({ level: 1, stage: 0 });
   });
 
   it('save + load round-trips coins and campaign', () => {

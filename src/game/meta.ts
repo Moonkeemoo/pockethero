@@ -132,13 +132,12 @@ export function defaultState(): SaveState {
   const r2 = makeLootRng(2);  // lootClicks = 2 after second call
   grantLootInto(inventory, 8, r2);
 
-  // Starter hero: a basic balanced creature (not a lone core) that fits the L1
-  // grid (-2..2) and clears Level 1. Balanced via tools/balance.ts engine sim.
+  // Starter hero: TINY (grow from 1-2 cubes) — a core + one force, so it has a
+  // small attack edge and reliably wins the first (trivial) stages, then the
+  // player GROWS it by placing earned cubes. Balanced via tools/balance.ts sim.
   const heroBuild: Build = [
     { gx: 0, gy: 0, type: 'core' },
-    { gx: -1, gy: 0, type: 'vital' }, { gx: -1, gy: 1, type: 'vital' }, { gx: 0, gy: 1, type: 'vital' },
-    { gx: 1, gy: 1, type: 'vital' }, { gx: -1, gy: -1, type: 'vital' },
-    { gx: 1, gy: 0, type: 'force' }, { gx: 2, gy: 0, type: 'force' }, { gx: 1, gy: -1, type: 'force' },
+    { gx: 1, gy: 0, type: 'force' },
   ];
 
   return {
@@ -259,7 +258,7 @@ export function openChest(
 const SAVE_KEY = 'pockethero.save';
 // Bump when the save schema or the starter changes; older saves are reset to
 // defaultState so everyone gets the current starter hero + balance.
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
 
 export function save(state: SaveState, storage?: StorageLike): void {
   const s: StorageLike | undefined = storage ?? (typeof globalThis !== 'undefined' && 'localStorage' in globalThis

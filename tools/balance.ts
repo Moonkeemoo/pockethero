@@ -6,12 +6,11 @@ import { genEnemy, stageCount, stageTier } from '../src/game/campaign';
 
 const B = (rows: [number, number, string][]): Build => rows.map(([gx, gy, type]) => ({ gx, gy, type }));
 
-// Candidate starter hero (a basic creature, not a lone core). Fits the L1 grid (-2..2).
-const STARTER: Build = B([
-  [0, 0, 'core'],
-  [-1, 0, 'vital'], [-1, 1, 'vital'], [0, 1, 'vital'], [1, 1, 'vital'], [-1, -1, 'vital'],
-  [1, 0, 'force'], [2, 0, 'force'], [1, -1, 'force'],
-]);
+// Tiny starter (grow from 1-2 cubes) + the sizes a player grows through.
+const H2: Build = B([[0, 0, 'core'], [1, 0, 'force']]);
+const H4: Build = B([[0, 0, 'core'], [1, 0, 'force'], [-1, 0, 'vital'], [0, 1, 'vital']]);
+const H6: Build = B([[0, 0, 'core'], [1, 0, 'force'], [2, 0, 'force'], [-1, 0, 'vital'], [0, 1, 'vital'], [-1, 1, 'vital']]);
+const STARTER = H2;
 
 function winRate(hero: Build, enemy: Build, n = 41): number {
   let wins = 0;
@@ -35,7 +34,8 @@ const UPGRADED: Build = B([
   [2, -1, 'ember'], [1, -1, 'mana'], [-1, 3, 'vital'],
 ]);
 
-for (const [tag, hero] of [['STARTER', STARTER], ['UPGRADED', UPGRADED]] as const) {
+void STARTER;
+for (const [tag, hero] of [['H2', H2], ['H4', H4], ['H6', H6], ['UPGRADED', UPGRADED]] as const) {
   const hs = deriveStats(hero);
   console.log(`\n${tag} cubes=${hero.length} HP=${hs.maxHP} atk=${hs.atk} armor=${hs.armor} crit=${hs.crit.toFixed(2)} magic=${hs.magic}`);
   for (let lvl = 1; lvl <= 2; lvl++) {

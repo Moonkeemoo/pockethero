@@ -88,7 +88,8 @@ export function genEnemy(level: number, stage: number): EnemySpec {
   const archetype = ARCHETYPES[archetypeIndex] as Archetype;
   const pool = ARCHETYPE_CUBES[archetype]!;
 
-  const rawTarget = 2 + (level - 1) * 5 + stage * 1.0;
+  // Gentle ramp so a tiny hero (grown from 1-2 cubes) can start, then must grow.
+  const rawTarget = 1 + (level - 1) * 4.5 + stage * 0.9;
   const targetPixels = Math.max(1, Math.round(rawTarget * TIER_MUL[tier]));
 
   // Build a connected blob around [0,0]

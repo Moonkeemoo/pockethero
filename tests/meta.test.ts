@@ -87,9 +87,11 @@ describe('defaultState', () => {
   it('starts at 0 essence', () => {
     expect(freshState().essence).toBe(0);
   });
-  it('has a balanced starter heroBuild with a core, fitting the L1 grid', () => {
+  it('has a tiny starter heroBuild (grow from 1-2 cubes): core + force, in the L1 grid', () => {
     const s = freshState();
-    expect(s.heroBuild.length).toBeGreaterThan(1);
+    // tiny — 1 to 3 cubes (grow from here)
+    expect(s.heroBuild.length).toBeGreaterThanOrEqual(1);
+    expect(s.heroBuild.length).toBeLessThanOrEqual(3);
     const cores = s.heroBuild.filter(p => p.type === 'core');
     expect(cores).toHaveLength(1);
     expect(cores[0]!.gx).toBe(0);
@@ -98,7 +100,8 @@ describe('defaultState', () => {
       expect(Math.abs(p.gx)).toBeLessThanOrEqual(2);
       expect(Math.abs(p.gy)).toBeLessThanOrEqual(2);
     }
-    expect(s.heroBuild.filter(p => p.type === 'force').length).toBeGreaterThanOrEqual(3);
+    // has at least one attack cube so the first stages are winnable
+    expect(s.heroBuild.filter(p => p.type === 'force').length).toBeGreaterThanOrEqual(1);
   });
   it('inventory contains placeable cube keys', () => {
     const inv = freshState().inventory;
