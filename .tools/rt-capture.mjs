@@ -6,7 +6,7 @@ import fs from 'node:fs';
 
 const PORT = 9222;
 const OUT = process.env.TEMP;
-const N = 7, GAP_MS = 200;
+const N = Number(process.argv[2]) || 7, GAP_MS = Number(process.argv[3]) || 200;
 
 const get = (path) => new Promise((res, rej) => {
   http.get(`http://127.0.0.1:${PORT}${path}`, (r) => {
