@@ -491,6 +491,7 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     cv.height = Math.round(H * DPR);
     cv.style.width  = W + 'px';
     cv.style.height = H + 'px';
+    repositionUiDiv();
   }
   window.addEventListener('resize', resize); resize();
 
@@ -603,16 +604,23 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   function isPortrait(): boolean { return W < PORTRAIT_BREAKPOINT; }
   /** Height of the bottom inventory strip in portrait mode */
   function portraitStripH(): number { return Math.round(H * 0.38); }
+  /** Portrait: height of the canvas HUD strip at the very top */
+  function portraitHudH(): number { return 86; }
+  /** Portrait: height of the action-buttons row directly below the HUD */
+  function portraitBtnRowH(): number { return 54; }
+  /** Portrait: y-start of the grid area (below HUD + button row) */
+  function portraitGridTop(): number { return portraitHudH() + portraitBtnRowH(); }
 
   function builderGeom() {
     const cell = BUILD_CELL * builderZoom;
     if (isPortrait()) {
-      // In portrait: grid fills the top area, panel goes to a bottom strip
+      // In portrait: grid fills the middle area between button row and inventory strip
       const stripH = portraitStripH();
-      const areaH = H - stripH;
+      const gridTop = portraitGridTop();
+      const areaH = H - stripH - gridTop;
       const areaW = W;
       const cx = areaW * 0.5;
-      const cy = areaH * 0.50;
+      const cy = gridTop + areaH * 0.50;
       return { cell, cx, cy, panelW: 0, areaW, portraitMode: true, stripH, areaH };
     }
     const panelW = Math.min(RIGHT_PANEL_W, W * 0.38);
@@ -1146,13 +1154,61 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
 
   // ---- DRAW PROGRESS HUD — level / XP / Essence / budget readout ----
   function drawProgressHUD(): void {
+    const lvl = opts.state.level;
+    const xpCur = opts.state.xp;
+    const xpMax = xpToNext(lvl);
+    const used = budgetUsed(), cap = budgetCap();
+
+    if (isPortrait()) {
+      // Portrait: full-width compact strip at y=0, height = portraitHudH()
+      const hudH = portraitHudH();
+      const pad = 8;
+      const bw = W - pad * 2;
+      // Background
+      ctx.fillStyle = 'rgba(8,12,20,0.88)'; ctx.fillRect(0, 0, W, hudH);
+      ctx.strokeStyle = 'rgba(90,120,170,0.35)'; ctx.lineWidth = 1;
+      ctx.strokeRect(0, 0, W, hudH);
+      ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+
+      // Row 1: Level | Essence | Field  (y≈18)
+      ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#cfe0ff';
+      ctx.fillText('Рів. ' + lvl, pad, 18);
+      ctx.font = '11px system-ui'; ctx.fillStyle = '#a0c8ff';
+      ctx.fillText('Ess: ' + opts.state.essence, pad + 66, 18);
+      ctx.fillStyle = '#9fb4d6';
+      ctx.fillText('Поле ' + (ringUnlocked * 2 + 1) + '×' + (ringUnlocked * 2 + 1), pad + 148, 18);
+
+      // Row 2: XP bar  (y≈24..34)
+      const xBy = 24, xBh = 10;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(pad, xBy, bw, xBh);
+      const xpFrac = xpMax > 0 ? Math.min(1, xpCur / xpMax) : 0;
+      ctx.fillStyle = '#9060d0'; ctx.fillRect(pad, xBy, bw * xpFrac, xBh);
+      ctx.strokeStyle = 'rgba(120,100,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(pad, xBy, bw, xBh);
+      ctx.font = 'bold 9px system-ui'; ctx.fillStyle = '#d0b8ff'; ctx.textAlign = 'center';
+      ctx.fillText('XP: ' + xpCur + ' / ' + xpMax, pad + bw / 2, xBy + 9);
+      ctx.textAlign = 'left';
+
+      // Row 3: Budget bar  (y≈40..54)
+      const bBy = 40, bBh = 14;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(pad, bBy, bw, bBh);
+      const frac = cap > 0 ? Math.min(1, used / cap) : 0;
+      const full = used >= cap;
+      ctx.fillStyle = full ? '#e5534b' : (frac > 0.8 ? '#e3b341' : '#56b0e3');
+      ctx.fillRect(pad, bBy, bw * frac, bBh);
+      ctx.strokeStyle = 'rgba(120,150,190,0.4)'; ctx.lineWidth = 1; ctx.strokeRect(pad, bBy, bw, bBh);
+      ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#eaf0fb'; ctx.textAlign = 'center';
+      ctx.fillText('Бюджет: ' + used + ' / ' + cap + '◆', pad + bw / 2, bBy + 11);
+      ctx.textAlign = 'left';
+      return;
+    }
+
+    // Desktop layout (unchanged)
     const x = 16, y = 14, w = 340, h = 70;
     ctx.fillStyle = 'rgba(8,12,20,0.7)'; ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = 'rgba(90,120,170,0.3)'; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
     ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
 
     // Row 1: Level + Essence + field
-    const lvl = opts.state.level;
     ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#cfe0ff';
     ctx.fillText('Рівень ' + lvl, x + 10, y + 16);
     ctx.font = '11px system-ui'; ctx.fillStyle = '#a0c8ff';
@@ -1161,8 +1217,6 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     ctx.fillText('Поле ' + (ringUnlocked * 2 + 1) + '×' + (ringUnlocked * 2 + 1), x + 196, y + 16);
 
     // Row 2: XP bar
-    const xpCur = opts.state.xp;
-    const xpMax = xpToNext(lvl);
     const bx = x + 10, by2 = y + 22, bw = w - 20, bh = 10;
     ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by2, bw, bh);
     const xpFrac = xpMax > 0 ? Math.min(1, xpCur / xpMax) : 0;
@@ -1174,7 +1228,6 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     ctx.textAlign = 'left';
 
     // Row 3: Budget bar
-    const used = budgetUsed(), cap = budgetCap();
     const bx2 = x + 10, by3 = y + 38, bh2 = 12;
     ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx2, by3, bw, bh2);
     const frac = cap > 0 ? Math.min(1, used / cap) : 0;
@@ -1493,20 +1546,18 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     drawCreaturePixels(ctx, build, previewX, previewY, scaleMul, t, 0);
   }
 
-  // ---- "← Лоббі" button — responsive ----
+  // ---- "← Лоббі" button — desktop canvas only; portrait handled by HTML uiDiv ----
   let fightBtnRect = { x: 0, y: 0, w: 0, h: 0 };
   function drawFightButton(): void {
     const geomB = builderGeom();
-    const bw = 110, bh = geomB.portraitMode ? 36 : 30;
-    let bx: number, by: number;
     if (geomB.portraitMode) {
-      // In portrait: put it at top-left corner, above the grid area
-      bx = 10;
-      by = 10;
-    } else {
-      bx = W - geomB.panelW / 2 - bw / 2;
-      by = H - 42;
+      // In portrait the button lives in uiDiv (HTML row) — zero the hit-rect so canvas tap doesn't fire
+      fightBtnRect = { x: 0, y: 0, w: 0, h: 0 };
+      return;
     }
+    const bw = 110, bh = 30;
+    const bx = W - geomB.panelW / 2 - bw / 2;
+    const by = H - 42;
     fightBtnRect = { x: bx, y: by, w: bw, h: bh };
     ctx.fillStyle = '#2a1d14'; ctx.fillRect(bx, by, bw, bh);
     ctx.strokeStyle = '#a05a32'; ctx.lineWidth = 1.5; ctx.strokeRect(bx, by, bw, bh);
@@ -1518,32 +1569,62 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   // ---- ACTION BUTTONS (HTML overlay) ----
   // Note: "+Рівень" and "Відкрити лут" removed — level/loot come only from fights now.
   let uiDiv: HTMLDivElement | null = null;
+
+  /** Apply portrait vs desktop CSS to uiDiv based on current W. Called on create and resize. */
+  function repositionUiDiv(): void {
+    if (!uiDiv) return;
+    if (isPortrait()) {
+      // Portrait: full-width row directly below HUD strip (y = portraitHudH)
+      // Width spans the full viewport; buttons distribute evenly.
+      const topPx = portraitHudH();
+      const rowH = portraitBtnRowH();
+      uiDiv.style.cssText = [
+        'position:fixed',
+        'left:0',
+        'right:0',
+        'top:' + topPx + 'px',
+        'height:' + rowH + 'px',
+        'z-index:6',
+        'display:flex',
+        'flex-direction:row',
+        'gap:4px',
+        'padding:5px 8px',
+        'box-sizing:border-box',
+        'align-items:center',
+        'justify-content:space-between',
+        'background:rgba(8,12,20,0.82)',
+        'border-bottom:1px solid rgba(90,120,170,0.25)',
+      ].join(';');
+    } else {
+      // Desktop: top-right overlay (original positioning)
+      uiDiv.style.cssText = [
+        'position:fixed',
+        'right:14px',
+        'top:10px',
+        'z-index:6',
+        'display:flex',
+        'gap:6px',
+        'flex-wrap:wrap',
+        'max-width:58vw',
+        'justify-content:flex-end',
+        'align-items:flex-start',
+        'background:none',
+        'border:none',
+        'padding:0',
+        'height:auto',
+      ].join(';');
+    }
+  }
+
   function createActionButtons(): void {
     const ui = document.createElement('div');
-    // In portrait the "← Лоббі" canvas button is at top-left; push these to top-right
-    // Use min-height 44px touch targets, wrap on narrow screens
-    ui.style.cssText = [
-      'position:fixed',
-      'right:14px',
-      'top:10px',
-      'z-index:6',
-      'display:flex',
-      'gap:6px',
-      'flex-wrap:wrap',
-      'max-width:58vw',
-      'justify-content:flex-end',
-      'align-items:flex-start',
-    ].join(';');
     uiDiv = ui;
+    repositionUiDiv();
 
     // min-height 44px for touch targets
-    const btnStyle = [
-      'background:#16203a',
+    const btnStyleBase = [
       'color:#dfe8ff',
-      'border:1px solid #38507e',
       'border-radius:8px',
-      'padding:10px 12px',
-      'min-height:44px',
       'font:bold 12px system-ui',
       'cursor:pointer',
       'letter-spacing:.3px',
@@ -1551,20 +1632,29 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
       'touch-action:manipulation',
       '-webkit-tap-highlight-color:transparent',
     ].join(';');
+    // Desktop buttons use fixed padding; portrait buttons flex-grow to fill the row evenly
+    const btnStyleDesktop = btnStyleBase + ';background:#16203a;border:1px solid #38507e;padding:10px 12px;min-height:44px;';
+    const btnStylePortrait = btnStyleBase + ';background:#16203a;border:1px solid #38507e;padding:6px 8px;min-height:44px;flex:1 1 0;text-align:center;';
 
     function makeBtn(text: string, extraStyle: string, title: string): HTMLButtonElement {
       const btn = document.createElement('button');
       btn.textContent = text; btn.title = title;
-      btn.style.cssText = btnStyle + ';' + extraStyle;
+      btn.style.cssText = (isPortrait() ? btnStylePortrait : btnStyleDesktop) + ';' + extraStyle;
       btn.addEventListener('pointerenter', () => { btn.style.filter = 'brightness(1.2)'; });
       btn.addEventListener('pointerleave', () => { btn.style.filter = ''; });
       return btn;
     }
 
-    const btnExpand = makeBtn('Розширити поле', 'background:#1a2230;border-color:#52708e', 'розширити поле');
+    // Portrait gets "← Лоббі" as first button in the row
+    const btnLobby  = makeBtn('← Лоббі',         'background:#2a1d14;border-color:#a05a32;color:#ffa060', 'повернутись в лоббі');
+    const btnExpand = makeBtn('Розширити поле',    'background:#1a2230;border-color:#52708e', 'розширити поле');
     const btnAll    = makeBtn('всі звʼязки: ВИМК', '', 'показати всі звʼязки');
-    const btnCodex  = makeBtn('Кодекс', '', 'кодекс комбінацій');
+    const btnCodex  = makeBtn('Кодекс',            '', 'кодекс комбінацій');
 
+    btnLobby.addEventListener('click', () => {
+      if (build.length > 1) opts.onFight(build.map(p => ({ ...p })));
+      else toast('Спершу побудуй героя (постав куби)', '#e3b341');
+    });
     btnExpand.addEventListener('click', () => expandGrid());
     btnAll.addEventListener('click', () => {
       showAllBonds = !showAllBonds;
@@ -1572,8 +1662,13 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     });
     btnCodex.addEventListener('click', () => { showCodex = !showCodex; });
 
+    // In portrait mode include the Lobby button; in desktop it's the canvas button
+    if (isPortrait()) {
+      ui.appendChild(btnLobby);
+    }
     ui.appendChild(btnExpand);
-    ui.appendChild(btnAll); ui.appendChild(btnCodex);
+    ui.appendChild(btnAll);
+    ui.appendChild(btnCodex);
     document.body.appendChild(ui);
   }
 
