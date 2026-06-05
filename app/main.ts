@@ -10,10 +10,11 @@ import type { RewardEvent } from '../src/game/meta';
 const state = meta.load();
 let stop: (() => void) | null = null;
 
-function showLobby(events?: RewardEvent[]): void {
+function showLobby(events?: RewardEvent[], lastOutcome?: 'levelCleared' | 'defeated'): void {
   stop?.(); stop = startLobby({
     state,
     rewardEvents: events,
+    lastOutcome,
     onBattle:  () => showBattle(),
     onBuilder: () => showBuilder(),
     onChest:   () => {
@@ -44,7 +45,7 @@ function showBattle(): void {
     state,
     onExit: (result) => {
       meta.save(state);
-      showLobby(result.rewards);
+      showLobby(result.rewards, result.outcome);
     },
   });
 }

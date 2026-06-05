@@ -8,7 +8,7 @@ import { CUBES } from '../index';
 import type { Build } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
 import { xpToNext, CHEST_COST } from '../game/meta';
-import { stageCount } from '../game/campaign';
+import { stageCount, stageTier } from '../game/campaign';
 
 /* ===========================================================================
    PUBLIC ENTRY POINT
@@ -19,6 +19,7 @@ export function startLobby(opts: {
   onBuilder: () => void;
   onChest: () => void;
   rewardEvents?: RewardEvent[];
+  lastOutcome?: 'levelCleared' | 'defeated';
 }): () => void {
 
 /* ===========================================================================
@@ -287,6 +288,20 @@ function drawButtons(pulse: number): void {
       ctx.shadowBlur = 0;
 
     } else {
+      // Secondary button. Chest dims when unaffordable, glows when affordable (§B).
+      const chestAfford = btn.key !== 'chest' || opts.state.coins >= CHEST_COST;
+      if (!chestAfford) ctx.globalAlpha = 0.5;
+      if (btn.key === 'chest' && chestAfford) {
+        ctx.save();
+        ctx.globalAlpha = 0.26 + 0.18 * pulse;
+        const cg = ctx.createRadialGradient(x + w / 2, y + h / 2, h * 0.25, x + w / 2, y + h / 2, w * 0.75);
+        cg.addColorStop(0, '#b070ff');
+        cg.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = cg;
+        roundRect(ctx, x - 18, y - 12, w + 36, h + 24, 14);
+        ctx.fill();
+        ctx.restore();
+      }
       // Secondary button
       const bg2 = ctx.createLinearGradient(x, y, x, y + h);
       if (btn.key === 'builder') {
@@ -340,7 +355,7 @@ function drawHUD(): void {
   const lvlX = pad;
   const xpCur = state.xp;
   const xpMax = xpToNext(state.level);
-  const xpFrac = Math.min(1, xpCur / xpMax);
+  const xpFrac = displayXpFrac; // smoothly-animated fill (§D.6)
 
   ctx.font = 'bold 14px "Segoe UI",system-ui,sans-serif';
   ctx.textAlign = 'left';
@@ -367,12 +382,17 @@ function drawHUD(): void {
   ctx.fillStyle = '#7090b0';
   ctx.fillText(`${xpCur} / ${xpMax}`, lvlX, barY + barH + 3);
 
-  // --- RIGHT: Coins ---
-  ctx.textAlign = 'right';
+  // --- RIGHT: Coins (tweened + scale-bump on gain, §D.6) ---
+  const coinBumpScale = 1 + (coinBump > 0 ? 0.22 * (coinBump / 0.22) : 0);
+  ctx.save();
+  ctx.translate(W - pad, 19);
+  ctx.scale(coinBumpScale, coinBumpScale);
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
   ctx.font = 'bold 15px "Segoe UI",system-ui,sans-serif';
   ctx.fillStyle = '#ffe050';
-  const coinLabel = `⬡ ${state.coins}`;
-  ctx.fillText(coinLabel, W - pad, 12);
+  ctx.fillText(`⬡ ${Math.round(displayCoins)}`, 0, 0);
+  ctx.restore();
+  ctx.textBaseline = 'top';
 
   // --- CENTRE: Рівень X · Етап Y/Z ---
   const campLevel  = state.campaign.level;
@@ -452,6 +472,101 @@ function drawToast(): void {
 }
 
 /* ===========================================================================
+   PROGRESSION FEEDBACK — counter tweens (§D.6) · "Далі:" line (§E) · badges (§B)
+   =========================================================================== */
+// What was gained on the run that just ended (for tween start + builder badge)
+let gainedCoins = 0, gainedXp = 0, gainedLevelUps = 0, gainedCubes = 0;
+if (opts.rewardEvents) {
+  for (const ev of opts.rewardEvents) {
+    if (ev.kind === 'coins') gainedCoins += ev.n;
+    else if (ev.kind === 'xp') gainedXp += ev.n;
+    else if (ev.kind === 'levelUp') gainedLevelUps++;
+    else if (ev.kind === 'cube') gainedCubes++;
+    else if (ev.kind === 'loot') gainedCubes += ev.cubes.length;
+  }
+}
+// Counter-tween state: start below the real value, climb to it (number-goes-up)
+let displayCoins = Math.max(0, opts.state.coins - gainedCoins);
+let coinBump = 0;
+const xpMax0 = xpToNext(opts.state.level);
+let displayXpFrac = gainedLevelUps > 0
+  ? 0
+  : Math.max(0, Math.min(1, (opts.state.xp - gainedXp) / xpMax0));
+
+function targetXpFrac(): number { return Math.min(1, opts.state.xp / xpToNext(opts.state.level)); }
+
+function stepCounters(dt: number): void {
+  const tc = opts.state.coins;
+  if (displayCoins < tc - 0.5) {
+    displayCoins = Math.min(tc, displayCoins + (tc - displayCoins) * Math.min(1, dt * 5) + dt * 28);
+    coinBump = 0.22;
+  } else {
+    displayCoins = tc;
+  }
+  if (coinBump > 0) coinBump -= dt;
+  displayXpFrac += (targetXpFrac() - displayXpFrac) * Math.min(1, dt * 4);
+}
+
+function isFreshSave(): boolean {
+  const s = opts.state;
+  return s.level === 1 && s.campaign.level === 1 && s.campaign.stage === 0 && s.heroBuild.length <= 2;
+}
+
+// "Далі:" — names the single most relevant next chase (priority-ordered, §E)
+function nextGoalLine(): string {
+  const s = opts.state;
+  const lvl = s.campaign.level, stg = s.campaign.stage, total = stageCount(lvl);
+  if (opts.lastOutcome === 'defeated') {
+    const tier = stageTier(lvl, stg);
+    const tn = tier === 'boss' ? ' (Бос)' : tier === 'elite' ? ' (Еліт)' : '';
+    return `Далі: підсиль героя — застряг на Етапі ${stg + 1}${tn}`;
+  }
+  const tier = stageTier(lvl, stg);
+  if (tier === 'boss')  return `Далі: Етап ${stg + 1} — Бос 💀`;
+  if (tier === 'elite') return `Далі: Етап ${stg + 1} — Еліт`;
+  if (xpToNext(s.level) - s.xp <= 30) return `Далі: Рівень ${s.level + 1} → +1 кубик`;
+  if (s.coins >= CHEST_COST) return 'Далі: Відкрий скриню';
+  return `Далі: Етап ${stg + 1}/${total}`;
+}
+
+function drawNextGoal(): void {
+  const txt = nextGoalLine();
+  const stuck = opts.lastOutcome === 'defeated';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.font = 'bold 12px "Segoe UI",system-ui,sans-serif';
+  ctx.fillStyle = stuck ? '#ffb070' : '#86d0b0';
+  ctx.fillText(txt, W * 0.5, 34);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+}
+
+// Button decorations drawn ON TOP: builder NEW badge + brand-new-save finger cue
+function drawButtonFx(): void {
+  const rects = getButtonRects();
+  for (const b of rects) {
+    if (b.key === 'builder' && gainedCubes > 0) {
+      const bx = b.x + b.w - 8, by = b.y - 2;
+      ctx.fillStyle = '#e5484d';
+      ctx.beginPath(); ctx.arc(bx, by, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(bx, by, 11, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px "Segoe UI",system-ui,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(gainedCubes), bx, by + 0.5);
+    }
+  }
+  if (isFreshSave()) {
+    const bb = rects.find(r => r.key === 'battle');
+    if (bb) {
+      const bob = Math.sin(t * 4) * 6;
+      ctx.font = '30px system-ui';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('👆', bb.x + bb.w / 2, bb.y + bb.h + 26 + bob);
+    }
+  }
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+}
+
+/* ===========================================================================
    MAIN RENDER LOOP
    =========================================================================== */
 function frame(now: number): void {
@@ -461,6 +576,7 @@ function frame(now: number): void {
 
   // Update toast timer
   if (toastTimer > 0) toastTimer -= dt;
+  stepCounters(dt);
 
   const ground  = heroGroundY();
   const cx      = W * 0.5;
@@ -473,7 +589,9 @@ function frame(now: number): void {
   drawHeroShadow(cx, ground, hScale);
   drawCreatureIdle(opts.state.heroBuild, cx, ground, hScale, t);
   drawHUD();
+  drawNextGoal();
   drawButtons(pulse);
+  drawButtonFx();
   drawToast();
 
   raf = requestAnimationFrame(frame);
