@@ -1,3 +1,3 @@
 // app/main.ts
-import { startApp } from '../src/render/app-canvas';
-startApp();
+import { startGauntlet } from '../src/render/gauntlet-fight';
+startGauntlet();
