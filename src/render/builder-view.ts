@@ -4,7 +4,7 @@
  * All derive logic delegated to src/derive (no detection re-implemented here).
  */
 
-import { deriveStats, deriveMoveset, CUBES, PRESETS } from '../index';
+import { deriveStats, deriveMoveset, CUBES } from '../index';
 import type { Build, PlacedCube, Trait, Stats } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
 import { xpToNext, grantLootInto } from '../game/meta';
@@ -598,7 +598,6 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     search: null as { x: number; y: number; w: number; h: number } | null,
   };
   const statHit = { detail: null as { x: number; y: number; w: number; h: number } | null };
-  const presetButtons: Array<{ k: string; x: number; y: number; w: number; h: number; label: string }> = [];
 
   let mouseX = -1, mouseY = -1;
   let t = 0;
@@ -700,19 +699,6 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     opts.state.inventory[p.type] = (opts.state.inventory[p.type] ?? 0) + 1;
     recompute();
   }
-  function loadPreset(key: string): void {
-    const preset = PRESETS[key];
-    if (!preset) return;
-    const pb = preset.build.map(p => ({ ...p }));
-    build = pb;
-    const need: Record<string, number> = {};
-    for (const p of pb) { if (p.type !== 'core') need[p.type] = (need[p.type] ?? 0) + 1; }
-    for (const k in need) { if ((opts.state.inventory[k] ?? 0) < 0) opts.state.inventory[k] = 0; }
-    prevShapeKeys = new Set();
-    recompute();
-    toast('Пресет «' + (preset.name) + '» (демо)', '#9fb4d6');
-  }
-
   // ---- BOND SEGMENTS (verbatim from poc lines 1835-1846) ----
   function bondSegments(): Array<{ i: number; j: number; key: string; name: string; x1: number; y1: number; x2: number; y2: number }> {
     const out = [];
@@ -1840,48 +1826,6 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     ctx.globalAlpha = 1; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   }
 
-  // ---- PRESET BUTTONS ----
-  function layoutPresetButtons(): void {
-    presetButtons.length = 0;
-    const keys = Object.keys(PRESETS);
-    // In portrait, place above the strip; in landscape, keep near the bottom
-    const byBase = isPortrait() ? H - portraitStripH() - 96 : H - 86;
-    let bx = 16, by = byBase;
-    ctx.font = 'bold 11px system-ui';
-    for (const k of keys) {
-      const label = PRESETS[k]!.name;
-      const w = ctx.measureText(label).width + 18;
-      presetButtons.push({ k, x: bx, y: by, w, h: 22, label });
-      bx += w + 6;
-    }
-  }
-  function drawPresetButtons(): void {
-    layoutPresetButtons();
-    ctx.font = 'bold 11px system-ui'; ctx.textBaseline = 'middle';
-    for (const b of presetButtons) {
-      ctx.fillStyle = 'rgba(16,24,48,0.88)';
-      if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
-        ctx.beginPath();
-        (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void })
-          .roundRect(b.x, b.y, b.w, b.h, 7);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(60,88,150,0.6)'; ctx.lineWidth = 1; ctx.stroke();
-      } else {
-        ctx.fillRect(b.x, b.y, b.w, b.h);
-        ctx.strokeStyle = '#38507e'; ctx.lineWidth = 1; ctx.strokeRect(b.x, b.y, b.w, b.h);
-      }
-      ctx.fillStyle = '#aabcd8'; ctx.textAlign = 'center';
-      ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
-    }
-    ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
-  }
-  function presetHit(mx: number, my: number): string | null {
-    for (const b of presetButtons) {
-      if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) return b.k;
-    }
-    return null;
-  }
-
   // ---- CREATURE PREVIEW (right-panel preview box — landscape only) ----
   function drawCreaturePreview(): void {
     const geomCp = builderGeom();
@@ -2138,7 +2082,6 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     }
     if (handleInventoryClick(mx, my)) return;
     if (statHit.detail && inRect(mx, my, statHit.detail)) { detailExpanded = !detailExpanded; return; }
-    const pk = presetHit(mx, my); if (pk) { loadPreset(pk); return; }
     // Grid interactions only outside the inventory area
     if (!isInInventoryArea(mx, my)) {
       const idx = pixelUnderMouse(mx, my);
@@ -2177,7 +2120,6 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     drawArena();
     drawBuilderGrid();
     drawProgressHUD();
-    drawPresetButtons();
     drawFightButton();
     drawInventoryPanel();
     drawStatsPanel();
