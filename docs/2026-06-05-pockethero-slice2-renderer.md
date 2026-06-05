@@ -1,7 +1,10 @@
 # PocketHero — Slice 2: 2.5D Billboard Combat Renderer — Design Spec
 
 **Date:** 2026-06-05
-**Status:** Approved direction (director owns vision; agent owns dev). Builds on Slice 1 (engine).
+**Status:** IMPLEMENTED on branch `slice-2-renderer` (`src/render/`). Engine-driven Route-B billboard
+combat renders and runs to K.O. with HP bars, UA log, depth, soft-body jiggle, and event→VFX juice
+(flash/shake/hitstop/debris/floating numbers/causal flare). 82 tests green; build clean. Director owns
+vision; agent owns dev. Builds on Slice 1 (engine).
 **Art route:** **B — HD-2D Diorama — LOCKED** by director (see `docs/2026-06-05-pockethero-art-direction.md` for the full art bible + the answered open questions). The renderer stays **theme-parameterized** (a swappable `Theme` holds palette/outline/lighting/shadow/VFX-ceiling), but **B is the target look** — a clean-flat theme is only a scaffolding step in the walking-skeleton build order, not the destination. Locked specifics: VFX ceiling = **Dead Cells**; palette = **Endesga-32 scale**; lighting = **single neutral-cool point light, upper-left**; cube = **gradient-fill + rim-light** (no hard outline); **no faces/eyes** (identity via silhouette + spring physics + per-type glyphs); arenas **simple-first** (Blender deferred). Visual + cube-quality reference: `poc/art-routes.html` route-B panel, built to the `poc/builder.html` bar.
 
 ---

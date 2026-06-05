@@ -43,7 +43,8 @@ Import from `src/index.ts` (engine barrel): `createFight`, `stepFight`, `runToEn
 
 ## Slice roadmap
 1. **Foundation** — DONE (engine + data + tests; 69 tests green).
-2. **2.5D billboard combat renderer** (PixiJS) — next; subscribes to the `CombatEvent` stream.
+2. **2.5D billboard combat renderer** (PixiJS) — DONE (`src/render/`; engine-driven Route-B
+   billboard fight, fixed-step + interpolation, event→VFX juice, HUD; 82 tests green).
 3. Builder UI · 4. Meta/progression · 5. Async PvP (model B, pure-auto).
 
 ## Known deferred gaps
