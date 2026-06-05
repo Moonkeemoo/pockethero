@@ -34,4 +34,19 @@ describe('moves & traits registries', () => {
     expect(new Set(keys).size).toBe(keys.length);
     expect(keys.length).toBeGreaterThanOrEqual(8);
   });
+  it('a known move has faithful values', () => {
+    expect(MOVES['fist']!.school).toBe('phys');
+    expect(MOVES['fire']!.magicSchool).toBe('fire');
+    expect(MOVES['sword']!.power).toBeGreaterThan(0);
+  });
+  it('req gating matches the POC thresholds', () => {
+    const core = [{ gx: 0, gy: 0, type: 'core' }];
+    expect(MOVES['fist']!.req?.(core) ?? true).toBe(true);          // always available
+    expect(MOVES['sword']!.req?.(core) ?? true).toBe(false);        // needs 3x force
+    const threeForce = [
+      { gx:0,gy:0,type:'core' },{ gx:1,gy:0,type:'force' },
+      { gx:0,gy:1,type:'force' },{ gx:1,gy:1,type:'force' },
+    ];
+    expect(MOVES['sword']!.req?.(threeForce) ?? true).toBe(true);
+  });
 });

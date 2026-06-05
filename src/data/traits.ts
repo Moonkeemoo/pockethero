@@ -1,4 +1,4 @@
-import type { SynergyDef, ShapeDef } from './types';
+import type { SynergyDef, ShapeDef, Build, PlacedCube } from './types';
 
 /** Element cube types used in the amplify synergy check */
 const ELEMENTS = ['ember', 'frost', 'spark', 'poison', 'arcane'] as const;
@@ -60,14 +60,12 @@ export const SYNERGY_DEFS: SynergyDef[] = [
   },
 ];
 
-type BuildPixel = { type: string; gx: number; gy: number };
-
 function cellOf(
   byCell: Map<string, number>,
-  build: BuildPixel[],
+  build: Build,
   gx: number,
   gy: number
-): { i: number; p: BuildPixel } | null {
+): { i: number; p: PlacedCube } | null {
   const i = byCell.get(gx + ',' + gy);
   return i === undefined ? null : { i, p: build[i]! };
 }

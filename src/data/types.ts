@@ -1,6 +1,9 @@
 export type Category = 'body' | 'attack' | 'defense' | 'agility' | 'magic' | 'special';
 export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
 
+export interface PlacedCube { gx: number; gy: number; type: string }  // type = Cube id; 'core' is special
+export type Build = PlacedCube[];
+
 export interface Cube {
   id: string;          // e.g. 'red', 'arcana', 'core'
   name: string;        // UA display name
@@ -29,6 +32,7 @@ export interface Move {
   critBonus?: number;  // sword: extra crit chance
   status?: string;     // status effect applied on hit (burn/slow/shock/poison)
   magicSchool?: string;// spell school (fire/frost/spark/poison/arcane); from POC `school` on magic moves
+  req?: (build: Build) => boolean;  // unlock predicate; absent = always available
 }
 
 /** Adjacency-based synergy between two orthogonally adjacent cube types */
@@ -51,7 +55,7 @@ export interface ShapeDef {
   effect: string;      // UA description of the bonus
   /** Detect matching shapes in a build; returns count of matches and the pixel index sets */
   detect: (
-    build: Array<{ type: string; gx: number; gy: number }>,
+    build: Build,
     byCell: Map<string, number>
   ) => { count: number; sets: number[][] };
 }

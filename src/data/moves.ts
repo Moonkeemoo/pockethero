@@ -1,12 +1,25 @@
-import type { Move } from './types';
+import type { Move, Build } from './types';
+
+/**
+ * Local helpers ported verbatim from poc/builder.html (lines 306, 283).
+ *   function count(build, type){ let n=0; for(const p of build) if(p.type===type) n++; return n; }
+ *   function manaFuel(c){ return count(c,'mana'); }
+ */
+function count(build: Build, type: string): number {
+  let n = 0;
+  for (const p of build) if (p.type === type) n++;
+  return n;
+}
+function manaFuel(build: Build): number {
+  return count(build, 'mana');
+}
 
 /**
  * Move registry ported verbatim from poc/builder.html MOVES.
  * POC field `type` (damage school: 'phys'|'magic') is renamed to `school`.
  * POC field `school` (spell element: 'fire'|'frost'|'spark'|'poison'|'arcane')
  *   is stored as `magicSchool` to avoid collision.
- * `req` functions are omitted here — the resolver (Task 5) will re-derive them
- *   from cube counts at runtime.
+ * `req` predicates restored from the POC exactly.
  * `id` == the registry key.
  */
 export const MOVES: Record<string, Move> = {
@@ -22,6 +35,7 @@ export const MOVES: Record<string, Move> = {
     ranged: false,
     double: true,
     weight: 3.0,
+    req: () => true,
   },
   sword: {
     id: 'sword',
@@ -35,6 +49,7 @@ export const MOVES: Record<string, Move> = {
     ranged: false,
     critBonus: 0.22,
     weight: 2.0,
+    req: c => count(c, 'force') >= 3,
   },
   bow: {
     id: 'bow',
@@ -47,6 +62,7 @@ export const MOVES: Record<string, Move> = {
     school: 'phys',
     ranged: true,
     weight: 1.6,
+    req: c => count(c, 'swift') >= 2,
   },
   fire: {
     id: 'fire',
@@ -61,6 +77,7 @@ export const MOVES: Record<string, Move> = {
     magicSchool: 'fire',
     status: 'burn',
     weight: 1.3,
+    req: c => count(c, 'ember') >= 1 && manaFuel(c) >= 1,
   },
   frost: {
     id: 'frost',
@@ -75,6 +92,7 @@ export const MOVES: Record<string, Move> = {
     magicSchool: 'frost',
     status: 'slow',
     weight: 1.3,
+    req: c => count(c, 'frost') >= 1 && manaFuel(c) >= 1,
   },
   spark: {
     id: 'spark',
@@ -89,6 +107,7 @@ export const MOVES: Record<string, Move> = {
     magicSchool: 'spark',
     status: 'shock',
     weight: 1.2,
+    req: c => count(c, 'spark') >= 1 && manaFuel(c) >= 1,
   },
   venom: {
     id: 'venom',
@@ -103,6 +122,7 @@ export const MOVES: Record<string, Move> = {
     magicSchool: 'poison',
     status: 'poison',
     weight: 1.1,
+    req: c => count(c, 'poison') >= 1 && manaFuel(c) >= 1,
   },
   arc: {
     id: 'arc',
@@ -116,6 +136,7 @@ export const MOVES: Record<string, Move> = {
     ranged: true,
     magicSchool: 'arcane',
     weight: 1.0,
+    req: c => count(c, 'arcane') >= 1 && manaFuel(c) >= 1,
   },
 };
 
