@@ -257,6 +257,9 @@ export function openChest(
 // Persistence
 // ---------------------------------------------------------------------------
 const SAVE_KEY = 'pockethero.save';
+// Bump when the save schema or the starter changes; older saves are reset to
+// defaultState so everyone gets the current starter hero + balance.
+const SAVE_VERSION = 2;
 
 export function save(state: SaveState, storage?: StorageLike): void {
   const s: StorageLike | undefined = storage ?? (typeof globalThis !== 'undefined' && 'localStorage' in globalThis
@@ -264,7 +267,7 @@ export function save(state: SaveState, storage?: StorageLike): void {
     : undefined);
   if (!s) return;
   try {
-    s.setItem(SAVE_KEY, JSON.stringify(state));
+    s.setItem(SAVE_KEY, JSON.stringify({ ...state, __v: SAVE_VERSION }));
   } catch {
     // Storage may be unavailable (private browsing, quota exceeded, etc.)
   }
@@ -278,7 +281,9 @@ export function load(storage?: StorageLike): SaveState {
     try {
       const raw = s.getItem(SAVE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<SaveState>;
+        const parsed = JSON.parse(raw) as Partial<SaveState> & { __v?: number };
+        // Reset pre-version-2 saves (old starter / schema) to the current default
+        if (parsed.__v !== SAVE_VERSION) return defaultState();
         // Validate shape — fallback to default if malformed
         if (
           typeof parsed.level === 'number' &&
