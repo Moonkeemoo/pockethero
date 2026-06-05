@@ -70,25 +70,17 @@ interface Delayed { t: number; fn: () => void }
 interface LogEntry { text: string; col: string }
 
 /* ============================================================================
-   MODULE-LEVEL STATE for teardown
+   MODULE-LEVEL STOP — allows startGauntlet to tear down a previous instance
    ========================================================================== */
-let _rafId = 0;
-let _running = false;
-let _canvas: HTMLCanvasElement | null = null;
-let _resizeListener: (() => void) | null = null;
+let _prevStop: (() => void) | null = null;
 
 /* ============================================================================
    PUBLIC ENTRY POINT
    ========================================================================== */
-export function startGauntlet(opts?: { heroBuild?: Build; onExit?: () => void }): void {
+export function startGauntlet(opts?: { heroBuild?: Build; onExit?: () => void }): () => void {
 
 // Teardown any previous run
-if (_running) {
-  _running = false;
-  cancelAnimationFrame(_rafId);
-  if (_canvas) { _canvas.remove(); _canvas = null; }
-  if (_resizeListener) { window.removeEventListener('resize', _resizeListener); _resizeListener = null; }
-}
+if (_prevStop) { _prevStop(); _prevStop = null; }
 
 /* ============================================================================
    0. TUNABLE CONSTANTS
@@ -280,11 +272,9 @@ const cv = document.createElement('canvas');
 cv.style.cssText = 'display:block;width:100%;height:100%;image-rendering:pixelated;position:fixed;inset:0;z-index:10;';
 document.body.style.cssText = 'margin:0;height:100%;background:#070a0f;overflow:hidden;font-family:"Segoe UI",system-ui,sans-serif;color:#cfd6e0';
 document.body.appendChild(cv);
-_canvas = cv;
 const ctx = cv.getContext('2d')!;
 let W = 0, H = 0, ground = 0;
 function resize(): void { W = cv.width = innerWidth; H = cv.height = innerHeight; ground = H*0.70; }
-_resizeListener = resize;
 window.addEventListener('resize', resize); resize();
 
 function makeFighter(entry: RosterEntry): Fighter {
@@ -1233,12 +1223,7 @@ function handleClick(ev: MouseEvent): void {
   const btnW=140, btnH=36, btnX=W/2-btnW/2, btnY=H*0.54;
   const cx=ev.clientX, cy=ev.clientY;
   if(cx>=btnX && cx<=btnX+btnW && cy>=btnY && cy<=btnY+btnH) {
-    _running = false;
-    cancelAnimationFrame(_rafId);
-    cv.remove(); _canvas = null;
-    window.removeEventListener('resize', resize);
-    window.removeEventListener('click', handleClick);
-    _resizeListener = null;
+    stop();
     opts.onExit();
   }
 }
@@ -1248,11 +1233,12 @@ if(opts?.onExit) window.addEventListener('click', handleClick);
    12. MAIN LOOP
    ============================================================================ */
 startCard();
-_running = true;
+let running = true;
+let rafId = 0;
 
 let prevTs = 0;
 function frame(ts: number): void {
-  if(!_running) return;
+  if(!running) return;
   const rawDt = Math.min(0.05, prevTs ? (ts - prevTs) / 1000 : 16 / 1000);
   prevTs = ts;
   t += rawDt;
@@ -1285,7 +1271,7 @@ function frame(ts: number): void {
   if(phase==='card'){
     drawVSCard();
     drawHUD();
-    _rafId = requestAnimationFrame(frame);
+    rafId = requestAnimationFrame(frame);
     return;
   }
 
@@ -1312,8 +1298,20 @@ function frame(ts: number): void {
   drawHUD();
   if(phase==='result') drawResultBanner();
 
-  _rafId = requestAnimationFrame(frame);
+  rafId = requestAnimationFrame(frame);
 }
-_rafId = requestAnimationFrame(frame);
+rafId = requestAnimationFrame(frame);
+
+// ---- DISPOSER ----
+function stop(): void {
+  if (!running) return;
+  running = false;
+  cancelAnimationFrame(rafId);
+  cv.remove();
+  window.removeEventListener('resize', resize);
+  window.removeEventListener('click', handleClick);
+}
+_prevStop = stop;
+return stop;
 
 } // end startGauntlet

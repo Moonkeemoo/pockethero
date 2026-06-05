@@ -479,7 +479,7 @@ function drawCreaturePixels(
 // ---------------------------------------------------------------------------
 // MAIN startBuilder()
 // ---------------------------------------------------------------------------
-export function startBuilder(opts: { onFight: (build: Build) => void }): void {
+export function startBuilder(opts: { onFight: (build: Build) => void }): () => void {
 
   // ---- canvas setup (verbatim DPR logic from poc lines 757-769) ----
   const cv = document.createElement('canvas');
@@ -1448,9 +1448,11 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): void {
   }
 
   // ---- ACTION BUTTONS (HTML overlay) ----
+  let uiDiv: HTMLDivElement | null = null;
   function createActionButtons(): void {
     const ui = document.createElement('div');
     ui.style.cssText = 'position:fixed;right:14px;top:10px;z-index:5;display:flex;gap:8px;flex-wrap:wrap;max-width:62vw;justify-content:flex-end';
+    uiDiv = ui;
 
     const btnStyle = 'background:#16203a;color:#dfe8ff;border:1px solid #38507e;border-radius:8px;padding:8px 12px;font:bold 12px system-ui;cursor:pointer;letter-spacing:.3px;box-shadow:0 2px 8px #0007';
 
@@ -1515,43 +1517,48 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): void {
     return false;
   }
 
+  function onMouseMove(e: MouseEvent): void { mouseX = e.clientX; mouseY = e.clientY; }
+  function onMouseLeave(): void { mouseX = -1; mouseY = -1; }
+  function onWheel(e: WheelEvent): void {
+    const { panelW } = builderGeom();
+    if (mouseX > W - panelW) { invScroll += e.deltaY * 0.5; }
+  }
+  function onKeyDown(e: KeyboardEvent): void {
+    if (invSearchFocus) {
+      if (e.key === 'Escape') { invSearchFocus = false; }
+      else if (e.key === 'Backspace') { invSearch = invSearch.slice(0, -1); e.preventDefault(); }
+      else if (e.key === 'Enter') { invSearchFocus = false; }
+      else if (e.key.length === 1) { invSearch += e.key; }
+      return;
+    }
+    if (e.key === '[') { builderZoom = Math.max(0.5, builderZoom - 0.1); }
+    if (e.key === ']') { builderZoom = Math.min(2.0, builderZoom + 0.1); }
+    if (e.key === 'b' || e.key === 'B') { showAllBonds = !showAllBonds; }
+    if (e.key === 'l' || e.key === 'L') { grantLoot(LOOT_BATCH); }
+    if (e.key === 'c' || e.key === 'C') { showCodex = !showCodex; }
+  }
+  function onCanvasClick(e: MouseEvent): void {
+    const mx = e.clientX, my = e.clientY;
+    if (showCodex) { showCodex = false; return; }
+    if (inRect(mx, my, fightBtnRect)) {
+      if (build.length > 1) opts.onFight(build.map(p => ({ ...p })));
+      else toast('Спершу побудуй героя (постав куби)', '#e3b341');
+      return;
+    }
+    if (handleInventoryClick(mx, my)) return;
+    if (statHit.detail && inRect(mx, my, statHit.detail)) { detailExpanded = !detailExpanded; return; }
+    const pk = presetHit(mx, my); if (pk) { loadPreset(pk); return; }
+    const idx = pixelUnderMouse(mx, my);
+    if (idx >= 0) { removePixel(idx); return; }
+    const { gx, gy } = screenToGrid(mx, my);
+    placePixel(gx, gy);
+  }
   function setupInput(): void {
-    window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
-    window.addEventListener('mouseleave', () => { mouseX = -1; mouseY = -1; });
-    window.addEventListener('wheel', e => {
-      const { panelW } = builderGeom();
-      if (mouseX > W - panelW) { invScroll += e.deltaY * 0.5; }
-    }, { passive: true });
-    window.addEventListener('keydown', e => {
-      if (invSearchFocus) {
-        if (e.key === 'Escape') { invSearchFocus = false; }
-        else if (e.key === 'Backspace') { invSearch = invSearch.slice(0, -1); e.preventDefault(); }
-        else if (e.key === 'Enter') { invSearchFocus = false; }
-        else if (e.key.length === 1) { invSearch += e.key; }
-        return;
-      }
-      if (e.key === '[') { builderZoom = Math.max(0.5, builderZoom - 0.1); }
-      if (e.key === ']') { builderZoom = Math.min(2.0, builderZoom + 0.1); }
-      if (e.key === 'b' || e.key === 'B') { showAllBonds = !showAllBonds; }
-      if (e.key === 'l' || e.key === 'L') { grantLoot(LOOT_BATCH); }
-      if (e.key === 'c' || e.key === 'C') { showCodex = !showCodex; }
-    });
-    cv.addEventListener('click', e => {
-      const mx = e.clientX, my = e.clientY;
-      if (showCodex) { showCodex = false; return; }
-      if (inRect(mx, my, fightBtnRect)) {
-        if (build.length > 1) opts.onFight(build.map(p => ({ ...p })));
-        else toast('Спершу побудуй героя (постав куби)', '#e3b341');
-        return;
-      }
-      if (handleInventoryClick(mx, my)) return;
-      if (statHit.detail && inRect(mx, my, statHit.detail)) { detailExpanded = !detailExpanded; return; }
-      const pk = presetHit(mx, my); if (pk) { loadPreset(pk); return; }
-      const idx = pixelUnderMouse(mx, my);
-      if (idx >= 0) { removePixel(idx); return; }
-      const { gx, gy } = screenToGrid(mx, my);
-      placePixel(gx, gy);
-    });
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseleave', onMouseLeave);
+    window.addEventListener('wheel', onWheel, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    cv.addEventListener('click', onCanvasClick);
   }
 
   // ---- DRAW BUILDER (verbatim from poc lines 2504-2516) ----
@@ -1570,9 +1577,12 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): void {
     drawToasts();
   }
 
-  // ---- MAIN LOOP ----
+    // ---- MAIN LOOP ----
+  let rafId = 0;
+  let stopped = false;
   let prevTs = 0;
   function frame(ts: number): void {
+    if (stopped) return;
     const rawDt = Math.min(0.05, (prevTs ? ts - prevTs : 16) / 1000);
     prevTs = ts;
     t += rawDt;
@@ -1584,7 +1594,7 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): void {
     updateBuilderHover();
     drawBuilder();
 
-    requestAnimationFrame(frame);
+    rafId = requestAnimationFrame(frame);
   }
 
   // ---- BOOT ----
@@ -1593,5 +1603,20 @@ export function startBuilder(opts: { onFight: (build: Build) => void }): void {
   // grant initial loot so inventory isn't empty
   grantLoot([8, 8]); grantLoot([8, 8]);
   recompute();
-  requestAnimationFrame(frame);
+  rafId = requestAnimationFrame(frame);
+
+  // ---- DISPOSER ----
+  return function stop(): void {
+    if (stopped) return;
+    stopped = true;
+    cancelAnimationFrame(rafId);
+    cv.remove();
+    if (uiDiv) uiDiv.remove();
+    window.removeEventListener('resize', resize);
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('mouseleave', onMouseLeave);
+    window.removeEventListener('wheel', onWheel);
+    window.removeEventListener('keydown', onKeyDown);
+    cv.removeEventListener('click', onCanvasClick);
+  };
 }
