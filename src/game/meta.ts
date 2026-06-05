@@ -23,6 +23,8 @@ export interface SaveState {
   essence: number;
   inventory: Record<string, number>;
   heroBuild: Build;
+  coins: number;
+  campaign: { level: number; stage: number };
 }
 
 export interface FightResult {
@@ -34,11 +36,14 @@ export type RewardEvent =
   | { kind: 'essence'; n: number }
   | { kind: 'xp'; n: number }
   | { kind: 'levelUp'; level: number }
-  | { kind: 'loot'; cubes: string[] };
+  | { kind: 'loot'; cubes: string[] }
+  | { kind: 'coins'; n: number }
+  | { kind: 'cube'; cube: string };
 
 // ---------------------------------------------------------------------------
 // Reward constants (tunable)
 // ---------------------------------------------------------------------------
+export const CHEST_COST = 50;
 export const ESSENCE_PER_FIGHT = 5;
 export const XP_PER_STAGE      = 20;
 export const XP_WIN_BONUS      = 30;
@@ -132,7 +137,39 @@ export function defaultState(): SaveState {
     essence: 0,
     inventory,
     heroBuild: [{ gx: 0, gy: 0, type: 'core' }],
+    coins: 0,
+    campaign: { level: 1, stage: 0 },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared level-up loop — mutates state.xp / state.level / state.inventory
+// and appends levelUp + loot events.
+// ---------------------------------------------------------------------------
+function applyXpAndLevelUp(
+  state: SaveState,
+  xpGained: number,
+  events: RewardEvent[],
+  rng?: () => number,
+): void {
+  state.xp += xpGained;
+  events.push({ kind: 'xp', n: xpGained });
+
+  let lootCounter = state.level * 1000 + state.xp; // unique seed per state snapshot
+  while (state.xp >= xpToNext(state.level)) {
+    state.xp -= xpToNext(state.level);
+    state.level++;
+
+    // Per-level loot batch (1–2 cubes), using rng if provided, else seeded from level
+    const levelRng = rng ?? makeLootRng(lootCounter++);
+    const n = 1 + ((levelRng() * 2) | 0); // 1 or 2
+    const granted = grantLootInto(state.inventory, n, levelRng);
+
+    events.push({ kind: 'levelUp', level: state.level });
+    if (granted.length > 0) {
+      events.push({ kind: 'loot', cubes: granted });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,30 +186,61 @@ export function addFightReward(
   state.essence += ESSENCE_PER_FIGHT;
   events.push({ kind: 'essence', n: ESSENCE_PER_FIGHT });
 
-  // XP
+  // XP (delegates to shared helper)
   const xpGained =
     result.stagesCleared * XP_PER_STAGE + (result.won ? XP_WIN_BONUS : XP_LOSS);
-  state.xp += xpGained;
-  events.push({ kind: 'xp', n: xpGained });
-
-  // Level-up loop
-  let lootCounter = state.level * 1000 + state.xp; // unique seed per state snapshot
-  while (state.xp >= xpToNext(state.level)) {
-    state.xp -= xpToNext(state.level);
-    state.level++;
-
-    // Per-level loot batch (1–2 cubes), using rng if provided, else seeded from level
-    const levelRng = rng ?? makeLootRng(lootCounter++);
-    const n = 1 + ((levelRng() * 2) | 0); // 1 or 2
-    const granted = grantLootInto(state.inventory, n, levelRng);
-
-    events.push({ kind: 'levelUp', level: state.level });
-    if (granted.length > 0) {
-      events.push({ kind: 'loot', cubes: granted });
-    }
-  }
+  applyXpAndLevelUp(state, xpGained, events, rng);
 
   return { events };
+}
+
+// ---------------------------------------------------------------------------
+// addKillReward — grant coins + optional cube + xp (with level-up loop)
+// ---------------------------------------------------------------------------
+export function addKillReward(
+  state: SaveState,
+  r: { xp: number; coins: number; cube?: string },
+  rng?: () => number,
+): { events: RewardEvent[] } {
+  const events: RewardEvent[] = [];
+
+  // Coins
+  state.coins += r.coins;
+  events.push({ kind: 'coins', n: r.coins });
+
+  // Optional guaranteed cube
+  if (r.cube !== undefined) {
+    state.inventory[r.cube] = (state.inventory[r.cube] ?? 0) + 1;
+    events.push({ kind: 'cube', cube: r.cube });
+  }
+
+  // XP + level-up loop (reuses shared helper)
+  applyXpAndLevelUp(state, r.xp, events, rng);
+
+  return { events };
+}
+
+// ---------------------------------------------------------------------------
+// openChest — spend CHEST_COST coins, grant 1–3 random cubes
+// ---------------------------------------------------------------------------
+export function openChest(
+  state: SaveState,
+  rng?: () => number,
+): { ok: boolean; cubes: string[]; events: RewardEvent[] } {
+  if (state.coins < CHEST_COST) {
+    return { ok: false, cubes: [], events: [] };
+  }
+
+  state.coins -= CHEST_COST;
+
+  // Determine number of cubes: 1–3
+  const effectiveRng = rng ?? mulberry32(state.level * 9999 + state.coins);
+  const count = 1 + Math.floor(effectiveRng() * 3); // 1, 2, or 3
+
+  const granted = grantLootInto(state.inventory, count, effectiveRng);
+  const events: RewardEvent[] = [{ kind: 'loot', cubes: granted }];
+
+  return { ok: true, cubes: granted, events };
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +283,15 @@ export function load(storage?: StorageLike): SaveState {
             essence: parsed.essence,
             inventory: parsed.inventory,
             heroBuild: parsed.heroBuild,
+            // Tolerate old saves missing coins / campaign — fill defaults
+            coins: typeof parsed.coins === 'number' ? parsed.coins : 0,
+            campaign:
+              parsed.campaign !== null &&
+              typeof parsed.campaign === 'object' &&
+              typeof (parsed.campaign as Record<string, unknown>)['level'] === 'number' &&
+              typeof (parsed.campaign as Record<string, unknown>)['stage'] === 'number'
+                ? { level: (parsed.campaign as { level: number; stage: number }).level, stage: (parsed.campaign as { level: number; stage: number }).stage }
+                : { level: 1, stage: 0 },
           };
         }
       }
