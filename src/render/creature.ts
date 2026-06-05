@@ -18,7 +18,8 @@ export class Creature {
   private t = 0;
   private squash = 0;
   private flashFrames = 0;
-  facing: 1 | -1 = 1; // TODO Task 13: apply root.scale.x = this.facing
+  private flareFrames = 0;   // causal flare brightness timer
+  facing: 1 | -1 = 1;
 
   constructor(private build: Build, private theme: Theme) {
     const gxs = build.map((p) => p.gx), gys = build.map((p) => p.gy);
@@ -74,10 +75,15 @@ export class Creature {
     for (const c of this.cells) { impulse(c.springX, (Math.random() - 0.5) * 4); impulse(c.springY, -2 - power * 0.1); }
   }
 
-  /** Set flash: tint the root white for N frames. */
+  /** Set flash: tint the root for N frames at the given color. */
   flash(frames: number, color: number): void {
     this.flashFrames = frames;
     this.root.tint = color;
+  }
+
+  /** Causal flare: briefly brighten the actor when it fires a move. */
+  flare(durationFrames: number): void {
+    this.flareFrames = durationFrames;
   }
 
   /** per-frame: advance springs + breathing + squash, lay out cells (spacing-based, crisp). */
@@ -93,10 +99,22 @@ export class Creature {
       const y = -((feet - c.gy) * CELL) * st * breath + c.springY.x;
       c.g.position.set(Math.round(x), Math.round(y));
     }
+    // Apply facing — creatures face each other via x-scale flip
+    this.root.scale.x = Math.abs(this.root.scale.x) * this.facing;
+
     // flash decay
     if (this.flashFrames > 0) {
       this.flashFrames--;
       if (this.flashFrames <= 0) this.root.tint = 0xffffff;
+    }
+
+    // flare: brighten root tint while active (overrides flash only when flash is done)
+    if (this.flareFrames > 0) {
+      this.flareFrames--;
+      // brighten by blending toward white; use alpha-channel trick via tint
+      const brightness = 0xfff4aa; // warm pre-attack glow
+      if (this.flashFrames <= 0) this.root.tint = brightness;
+      if (this.flareFrames <= 0 && this.flashFrames <= 0) this.root.tint = 0xffffff;
     }
   }
 }
