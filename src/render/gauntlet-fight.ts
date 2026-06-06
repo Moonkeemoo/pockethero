@@ -10,8 +10,8 @@ import { MOVES as PROD_MOVES } from '../index';
 import { deriveStats as prodDeriveStats, deriveMoveset as prodDeriveMoveset } from '../index';
 import type { Build } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
-import { addKillReward } from '../game/meta';
-import { genEnemy, stageCount, stageTier, stageReward } from '../game/campaign';
+import { winStage, completeLevel, loseRun, buyCube, accountStatBonus, noteSeen, save } from '../game/meta';
+import { genEnemy, stageCount, stageTier, stageReward, rollShop, cubePrice, stuckHint } from '../game/campaign';
 
 /* ============================================================================
    TYPES
@@ -228,7 +228,7 @@ export function startCampaignBattle(opts: {
   const events2: Record<string, unknown>[] = [];
   function emit2(e: Record<string, unknown>): void { events2.push(e); }
 
-  let phase2: 'card' | 'fight' | 'result' = 'card';
+  let phase2: 'card' | 'fight' | 'result' | 'shop' = 'card';
   let winner2: Fighter | null = null;
   const actors2: Actor[] = [];
   const projectiles2: Projectile[] = [];
@@ -994,9 +994,11 @@ export function startCampaignBattle(opts: {
      CAMPAIGN SEQUENCER STATE
      ------------------------------------------------------------------------ */
   const { state } = opts;
-  const campaignLevel = state.campaign.level;
+  // Mirrors of the run pointer, refreshed from state.run at each startCard2 so
+  // draws are stable across a stage. winStage/completeLevel/loseRun mutate state.run.
+  let campaignLevel = state.run.level;
   const totalStages = stageCount(campaignLevel);
-  let currentStageIdx = state.campaign.stage; // 0-based, from checkpoint
+  let currentStageIdx = state.run.stage; // 0-based
   let stagesWon = 0;
   const rewards: RewardEvent[] = [];
   let sessionOver = false;
@@ -1213,22 +1215,6 @@ export function startCampaignBattle(opts: {
     const w = Math.min(150, W2 * 0.42), h = 34; return { x: W2 / 2 - w / 2, y: H2 * 0.52 + 54, w, h };
   }
 
-  // Summarise this run's banked haul for the loss tally (§C)
-  function runHaulLine2(): string {
-    let xp = 0, coins = 0, cubes = 0;
-    for (const ev of rewards) {
-      if (ev.kind === 'xp') xp += ev.n;
-      else if (ev.kind === 'coins') coins += ev.n;
-      else if (ev.kind === 'cube') cubes += 1;
-      else if (ev.kind === 'loot') cubes += ev.cubes.length;
-    }
-    const parts: string[] = [];
-    if (xp > 0) parts.push(`+${xp} XP`);
-    if (coins > 0) parts.push(`⬡ ${coins}`);
-    if (cubes > 0) parts.push(`${cubes} кубик${cubes > 1 ? 'ів' : ''}`);
-    return parts.length ? parts.join('   ·   ') : 'нічого — спробуй ще!';
-  }
-
   function drawResultBanner2(): void {
     const isLast = currentStageIdx === totalStages - 1;
 
@@ -1299,9 +1285,8 @@ export function startCampaignBattle(opts: {
       if (ct > 0.5) {
         const rr = Math.min(1, (ct - 0.5) / 0.7);
         const br = stageReward(campaignLevel, currentStageIdx);
-        const cubes = br.cube ? 1 : 0;
         ctx2.font = 'bold 22px system-ui'; ctx2.fillStyle = '#dfe7f4';
-        ctx2.fillText(`Здобуто:  +${Math.round(br.xp * rr)} XP   ⬡ ${Math.round(br.coins * rr)}${cubes ? `   ${Math.round(cubes * rr)} куб.` : ''}`, W2 / 2, H2 * 0.47);
+        ctx2.fillText(`Здобуто:  +${Math.round(br.xp * rr)} XP   ⬡ ${Math.round(br.coins * rr)}`, W2 / 2, H2 * 0.47);
       }
       // Next-level preview after 1.2s
       if (ct > 1.2) {
@@ -1323,15 +1308,16 @@ export function startCampaignBattle(opts: {
     // Headline (factual, numbered)
     ctx2.font = 'bold 38px system-ui'; ctx2.fillStyle = '#ff8a6a';
     ctx2.fillText(`Поразка на Етапі ${currentStageIdx + 1}`, W2 / 2, H2 * 0.30);
-    // Reframe: "Майже! Ти зібрав:" + run haul
-    ctx2.font = 'bold 22px system-ui'; ctx2.fillStyle = '#ffe24a';
-    ctx2.fillText('Майже! Ти зібрав:', W2 / 2, H2 * 0.385);
-    ctx2.font = 'bold 19px system-ui'; ctx2.fillStyle = '#cfe0ff';
-    ctx2.fillText(runHaulLine2(), W2 / 2, H2 * 0.435);
-    // Checkpoint reassurance
-    ctx2.font = '13px system-ui'; ctx2.fillStyle = '#90a4c0';
-    ctx2.fillText(`Чекпоінт збережено · Етап ${currentStageIdx + 1}`, W2 / 2, H2 * 0.475);
-    // Primary button: "Покращити героя →"
+    // Roguelite reframe: level restarts from 1 cube, but coins are kept
+    ctx2.font = 'bold 20px system-ui'; ctx2.fillStyle = '#ffe24a';
+    ctx2.fillText('Рівень почнеться з 1 куба', W2 / 2, H2 * 0.385);
+    ctx2.font = 'bold 17px system-ui'; ctx2.fillStyle = '#cfe0ff';
+    ctx2.fillText(`Монети збережено: ⬡ ${state.coins}`, W2 / 2, H2 * 0.435);
+    if ((state.lossStreak ?? 0) >= 3) {
+      ctx2.font = '13px system-ui'; ctx2.fillStyle = '#ffb070';
+      ctx2.fillText(`Підказка: ${stuckHint(campaignLevel, currentStageIdx)}`, W2 / 2, H2 * 0.475);
+    }
+    // Primary button: "↺ Спробувати знову"
     const bi = lossBtnImprove2();
     const bg = ctx2.createLinearGradient(bi.x, bi.y, bi.x, bi.y + bi.h);
     bg.addColorStop(0, '#2f6bbf'); bg.addColorStop(1, '#1b3d72');
@@ -1340,15 +1326,15 @@ export function startCampaignBattle(opts: {
     ctx2.strokeStyle = '#7fb0ff'; ctx2.lineWidth = 1.5;
     ctx2.beginPath(); ctx2.roundRect(bi.x, bi.y, bi.w, bi.h, 10); ctx2.stroke();
     ctx2.font = 'bold 17px system-ui'; ctx2.fillStyle = '#eaf2ff';
-    ctx2.fillText('Покращити героя →', W2 / 2, bi.y + bi.h / 2 + 1);
-    // Secondary button: "Ще раз"
+    ctx2.fillText('↺ Спробувати знову', W2 / 2, bi.y + bi.h / 2 + 1);
+    // Secondary button: "← Лоббі"
     const br = lossBtnRetry2();
     ctx2.fillStyle = 'rgba(28,36,54,0.85)';
     ctx2.beginPath(); ctx2.roundRect(br.x, br.y, br.w, br.h, 8); ctx2.fill();
     ctx2.strokeStyle = 'rgba(120,150,200,0.45)'; ctx2.lineWidth = 1.2;
     ctx2.beginPath(); ctx2.roundRect(br.x, br.y, br.w, br.h, 8); ctx2.stroke();
     ctx2.font = 'bold 14px system-ui'; ctx2.fillStyle = '#aac4e6';
-    ctx2.fillText('↺ Ще раз', W2 / 2, br.y + br.h / 2 + 1);
+    ctx2.fillText('← Лоббі', W2 / 2, br.y + br.h / 2 + 1);
     ctx2.restore(); ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
   }
 
@@ -1505,10 +1491,10 @@ export function startCampaignBattle(opts: {
   }
 
   function buildCampaignFighters(): void {
-    // Hero from saved build
+    // Hero from the current run build
     const heroEntry: RosterEntry = {
-      id: 'hero', name: 'Твій герой', arch: 'Герой',
-      build: state.heroBuild as BuildPixel[],
+      id: 'hero', name: 'Твій дух', arch: 'Дух',
+      build: state.run.build as BuildPixel[],
       scale: 1.0, accent: '#add0ff', side: -1,
     };
     // Enemy from campaign generator
@@ -1525,10 +1511,24 @@ export function startCampaignBattle(opts: {
     };
     hero2 = makeFighter2(heroEntry);
     enemy2 = makeFighter2(enemyEntry);
+    // D3 — permanent account HP bonus folded onto the hero.
+    const hpAdd = accountStatBonus(state).maxHpAdd;
+    if (hpAdd > 0) { hero2.maxHP += hpAdd; hero2.hp = hero2.maxHP; hero2.hpShown = hero2.maxHP; }
+    // Stage 1 is the bootstrap: the player has only a lone core and no coins yet,
+    // so the very first enemy is a deliberate pushover (≈50% HP, softer hits) to
+    // guarantee the win that funds the first shop. Later stages ramp normally.
+    if (currentStageIdx === 0) {
+      enemy2.maxHP = Math.max(12, Math.round(enemy2.maxHP * 0.5));
+      enemy2.hp = enemy2.maxHP; enemy2.hpShown = enemy2.maxHP;
+      enemy2.stats.atk = Math.max(1, enemy2.stats.atk * 0.6);
+    }
     fighters2 = [hero2, enemy2];
   }
 
   function startCard2(): void {
+    // Refresh the run mirrors (winStage/completeLevel/loseRun moved state.run).
+    campaignLevel = state.run.level;
+    currentStageIdx = state.run.stage;
     // §A onboarding: the very first fight's card is shortened — don't make a new
     // player wait through ceremony before they've earned any investment.
     const firstEver = campaignLevel === 1 && currentStageIdx === 0;
@@ -1557,19 +1557,12 @@ export function startCampaignBattle(opts: {
     resultWinnerColor2 = stageHeroWon2 ? '#7fd0ff' : enemy2.accent;
     const isLast = currentStageIdx === totalStages - 1;
     if (stageHeroWon2 && !isLast) {
-      // §D.1 stage-win heartbeat — short window, coin/cube spray + node tick
+      // §D.1 stage-win heartbeat — short window, coin spray + node tick
       resultT2 = WIN_POP_DUR2;
       hitstop2 = Math.max(hitstop2, 0.08);
-      const rw = stageReward(campaignLevel, currentStageIdx);
-      spawnRewardSpray2(rw);
+      spawnRewardSpray2(stageReward(campaignLevel, currentStageIdx));
       nodeTickT2 = 0.0001;
-      // §D.4 rarity flavour + first-ever "Новий тип" callout
       winCubeFlavour2 = null;
-      if (rw.cube) {
-        const rar = CUBES[rw.cube]?.rarity ?? 'common';
-        const isNew = !(state.seenTypes ?? []).includes(rw.cube);
-        winCubeFlavour2 = { name: CUBES[rw.cube]?.name ?? rw.cube, rar, isNew };
-      }
     } else if (stageHeroWon2 && isLast) {
       // §D.2 boss cleared → level-complete ceremony (longer beat)
       resultT2 = LEVELCLEAR_DUR2;
@@ -1582,60 +1575,208 @@ export function startCampaignBattle(opts: {
 
   function handleStageEnd(): void {
     if (sessionOver) return;
+    const wasBoss = currentStageIdx === totalStages - 1;
     if (stageHeroWon2) {
-      // Grant reward, mutate state
-      const reward = stageReward(campaignLevel, currentStageIdx);
-      const { events: rewardEvents } = addKillReward(state, reward);
+      // Grant coins + account XP; winStage advances state.run.stage.
+      const { events: rewardEvents } = winStage(state, stageReward(campaignLevel, currentStageIdx));
       rewards.push(...rewardEvents);
       stagesWon++;
-      state.campaign.stage = currentStageIdx + 1;
-      state.lossStreak = 0; // progress made — clear the stuck-stage streak
 
-
-
-      // §D.3 — queue a level-up pop per levelUp event (staggered)
+      // Account level-up pops (staggered)
       let luDelay = 0.15;
       for (const ev of rewardEvents) {
         if (ev.kind === 'levelUp') { levelUpPops2.push({ level: ev.level, t: 0, delay: luDelay }); luDelay += 0.28; }
       }
 
-      if (currentStageIdx === totalStages - 1) {
-        // BOSS cleared → level complete. Ceremony already played during the
-        // result window; exit shortly after (player may tap to skip).
-        state.campaign.level = campaignLevel + 1;
-        state.campaign.stage = 0;
-        sessionOver = true;
-        setTimeout2c(0.3, () => {
-          if (exitFired) return; exitFired = true;
-          stop2();
-          opts.onExit({ outcome: 'levelCleared', stagesWon, rewards });
-        });
-      } else {
-        // Advance to next stage
-        currentStageIdx++;
+      if (wasBoss) {
+        // Boss cleared → chapter complete; reset to a fresh 1-cube build and
+        // roll straight into the next level's stage 1 (no pre-stage-1 shop).
+        completeLevel(state);
+        save(state);
         startCard2();
+      } else {
+        // Between-stage shop: build up before the next stage.
+        save(state);
+        enterShop2();
       }
     } else {
-      // Hero defeated — checkpoint stays at current stage. No auto-exit: the
-      // "almost, not over" banner waits for the player to pick a path (§C).
+      // Defeat → roguelite: restart this level from stage 1 with 1 cube.
+      // The loss banner stays until the player taps (Ще раз / ← Лоббі).
+      loseRun(state);
+      save(state);
       sessionOver = true;
-      // Track consecutive losses on this exact stage (§C stuck-stage hint).
-      const ls = state.lossStage;
-      if (ls && ls.level === campaignLevel && ls.stage === currentStageIdx) {
-        state.lossStreak = (state.lossStreak ?? 0) + 1;
-      } else {
-        state.lossStreak = 1;
-        state.lossStage = { level: campaignLevel, stage: currentStageIdx };
-      }
     }
   }
 
-  // §C — retry the current stage in place (checkpoint kept, banked rewards kept)
+  // Restart the run after a loss (state already reset by loseRun → stage 0, 1 cube).
   function retryStage2(): void {
     sessionOver = false; exitFired = false;
     rewardTokens2.length = 0; levelUpPops2.length = 0;
     winPopT2 = 0; nodeTickT2 = 0;
     startCard2();
+  }
+
+  /* --------------------------------------------------------------------------
+     BETWEEN-STAGE SHOP + HERO GRID (roguelite build-up)
+     ------------------------------------------------------------------------ */
+  interface ShopOffer { type: string; price: number; bought: boolean }
+  let shopOffers: ShopOffer[] = [];
+  let shopSelected = -1;     // index of the offer being placed (-1 = none)
+  let shopNote = '';         // transient hint
+  let shopNoteT = 0;
+
+  function enterShop2(): void {
+    phase2 = 'shop';
+    currentStageIdx = state.run.stage;   // upcoming stage (winStage advanced it)
+    campaignLevel = state.run.level;
+    const types = rollShop(state.run.level, state.run.stage);
+    shopOffers = types.map(ty => ({ type: ty, price: cubePrice(ty, state.run.stage), bought: false }));
+    shopSelected = -1; shopNote = ''; shopNoteT = 0;
+  }
+
+  // --- hero-grid geometry (top-down build view, distinct from the billboard) ---
+  function gridGeom2(): { cx: number; cy: number; cell: number } {
+    if (phase2 === 'shop') return { cx: W2 / 2, cy: H2 * 0.40, cell: 26 };
+    return { cx: 60, cy: H2 - 64, cell: 13 };   // compact read-only panel during fight
+  }
+  function gridToScreenRun2(gx: number, gy: number): { x: number; y: number } {
+    const g = gridGeom2(); return { x: g.cx + gx * g.cell, y: g.cy + gy * g.cell };
+  }
+  function screenToGridRun2(mx: number, my: number): { gx: number; gy: number } {
+    const g = gridGeom2(); return { gx: Math.round((mx - g.cx) / g.cell), gy: Math.round((my - g.cy) / g.cell) };
+  }
+  function cellOccupiedRun2(gx: number, gy: number): boolean {
+    return state.run.build.some(p => p.gx === gx && p.gy === gy);
+  }
+  function adjToBodyRun2(gx: number, gy: number): boolean {
+    return state.run.build.some(p => (Math.abs(p.gx - gx) + Math.abs(p.gy - gy)) === 1);
+  }
+
+  function drawHeroGrid2(): void {
+    const g = gridGeom2();
+    if (phase2 === 'shop' && shopSelected >= 0) {
+      // placeable-cell hints (empty cells orthogonally adjacent to the body)
+      const seen = new Set<string>();
+      for (const p of state.run.build) {
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+          const gx = p.gx + dx, gy = p.gy + dy, k = gx + ',' + gy;
+          if (seen.has(k) || cellOccupiedRun2(gx, gy)) continue; seen.add(k);
+          const s = gridToScreenRun2(gx, gy);
+          ctx2.fillStyle = 'rgba(127,208,255,0.14)';
+          ctx2.fillRect(s.x - g.cell / 2 + 1, s.y - g.cell / 2 + 1, g.cell - 2, g.cell - 2);
+          ctx2.strokeStyle = 'rgba(127,208,255,0.55)'; ctx2.lineWidth = 1;
+          ctx2.strokeRect(s.x - g.cell / 2 + 1, s.y - g.cell / 2 + 1, g.cell - 2, g.cell - 2);
+        }
+      }
+    }
+    for (const p of state.run.build) {
+      const s = gridToScreenRun2(p.gx, p.gy);
+      const w = g.cell - 2;
+      ctx2.fillStyle = CUBES[p.type]?.col ?? '#888';
+      ctx2.fillRect(s.x - w / 2, s.y - w / 2, w, w);
+      ctx2.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx2.fillRect(s.x - w / 2, s.y - w / 2, w, Math.max(1, w * 0.22));
+    }
+  }
+
+  function drawWalletHUD2(): void {
+    ctx2.textAlign = 'right'; ctx2.textBaseline = 'alphabetic';
+    ctx2.font = 'bold 16px system-ui'; ctx2.fillStyle = '#ffe070';
+    ctx2.fillText(`⬡ ${state.coins}`, W2 - 12, 24);
+    ctx2.textAlign = 'left';
+  }
+
+  function shopCardRect2(i: number): { x: number; y: number; w: number; h: number } {
+    const n = 3, gap = 12, cw = Math.min(150, (W2 - gap * (n + 1)) / n), ch = 92;
+    const totalW = n * cw + (n - 1) * gap;
+    return { x: W2 / 2 - totalW / 2 + i * (cw + gap), y: H2 - ch - 58, w: cw, h: ch };
+  }
+  function shopFightBtnRect2(): { x: number; y: number; w: number; h: number } {
+    const w = Math.min(220, W2 * 0.6), h = 42; return { x: W2 / 2 - w / 2, y: H2 - 48, w, h };
+  }
+  function shopLobbyBtnRect2(): { x: number; y: number; w: number; h: number } {
+    return { x: 12, y: 12, w: 96, h: 30 };
+  }
+
+  function drawShop2(): void {
+    if (phase2 !== 'shop') return;
+    ctx2.fillStyle = 'rgba(6,9,15,0.58)'; ctx2.fillRect(0, 0, W2, H2);
+    ctx2.textAlign = 'center'; ctx2.textBaseline = 'alphabetic';
+    ctx2.font = 'bold 18px system-ui'; ctx2.fillStyle = '#cfe0ff';
+    ctx2.fillText(`Магазин · далі Етап ${state.run.stage + 1}/${totalStages}`, W2 / 2, H2 * 0.12);
+    ctx2.font = '12px system-ui'; ctx2.fillStyle = '#90a4c0';
+    ctx2.fillText(shopSelected >= 0 ? 'Тапни клітинку поряд із тілом, щоб поставити' : 'Купи куб і добудуй духа', W2 / 2, H2 * 0.12 + 20);
+    if (shopNoteT > 0) { ctx2.globalAlpha = Math.min(1, shopNoteT * 2); ctx2.fillStyle = '#ffb070'; ctx2.font = 'bold 14px system-ui'; ctx2.fillText(shopNote, W2 / 2, H2 * 0.12 + 42); ctx2.globalAlpha = 1; }
+
+    drawHeroGrid2();
+
+    for (let i = 0; i < shopOffers.length; i++) {
+      const o = shopOffers[i]!; const r = shopCardRect2(i);
+      const afford = state.coins >= o.price;
+      ctx2.globalAlpha = o.bought ? 0.35 : 1;
+      ctx2.fillStyle = i === shopSelected ? 'rgba(40,70,120,0.95)' : 'rgba(16,24,44,0.95)';
+      ctx2.beginPath(); ctx2.roundRect(r.x, r.y, r.w, r.h, 10); ctx2.fill();
+      ctx2.strokeStyle = i === shopSelected ? '#7fd0ff' : (afford ? 'rgba(120,150,200,0.5)' : 'rgba(120,70,70,0.7)');
+      ctx2.lineWidth = 1.5; ctx2.beginPath(); ctx2.roundRect(r.x, r.y, r.w, r.h, 10); ctx2.stroke();
+      ctx2.textAlign = 'center';
+      if (o.bought) {
+        ctx2.fillStyle = '#7fe0a0'; ctx2.font = 'bold 14px system-ui';
+        ctx2.fillText('куплено ✓', r.x + r.w / 2, r.y + r.h / 2);
+      } else {
+        const col = CUBES[o.type]?.col ?? '#888';
+        ctx2.fillStyle = col; ctx2.fillRect(r.x + r.w / 2 - 16, r.y + 12, 32, 32);
+        ctx2.fillStyle = 'rgba(255,255,255,0.16)'; ctx2.fillRect(r.x + r.w / 2 - 16, r.y + 12, 32, 7);
+        ctx2.fillStyle = '#dfe7f4'; ctx2.font = 'bold 12px system-ui';
+        ctx2.fillText(CUBES[o.type]?.name ?? o.type, r.x + r.w / 2, r.y + 58);
+        ctx2.fillStyle = afford ? '#ffe070' : '#d08080'; ctx2.font = 'bold 14px system-ui';
+        ctx2.fillText(`⬡ ${o.price}`, r.x + r.w / 2, r.y + r.h - 12);
+      }
+      ctx2.globalAlpha = 1;
+    }
+
+    const fb = shopFightBtnRect2();
+    const bg = ctx2.createLinearGradient(fb.x, fb.y, fb.x, fb.y + fb.h);
+    bg.addColorStop(0, '#e8931a'); bg.addColorStop(1, '#7a3d02');
+    ctx2.fillStyle = bg; ctx2.beginPath(); ctx2.roundRect(fb.x, fb.y, fb.w, fb.h, 10); ctx2.fill();
+    ctx2.strokeStyle = '#ffcd60'; ctx2.lineWidth = 1.5; ctx2.beginPath(); ctx2.roundRect(fb.x, fb.y, fb.w, fb.h, 10); ctx2.stroke();
+    ctx2.fillStyle = '#fff8e0'; ctx2.font = 'bold 17px system-ui'; ctx2.textBaseline = 'middle';
+    ctx2.fillText('В БІЙ →', fb.x + fb.w / 2, fb.y + fb.h / 2);
+    ctx2.textBaseline = 'alphabetic';
+
+    drawWalletHUD2();
+    const lb = shopLobbyBtnRect2();
+    ctx2.fillStyle = 'rgba(20,28,44,0.8)'; ctx2.beginPath(); ctx2.roundRect(lb.x, lb.y, lb.w, lb.h, 7); ctx2.fill();
+    ctx2.fillStyle = '#9fb0c8'; ctx2.font = 'bold 12px system-ui'; ctx2.textBaseline = 'middle';
+    ctx2.fillText('← Лоббі', lb.x + lb.w / 2, lb.y + lb.h / 2);
+    ctx2.textBaseline = 'alphabetic'; ctx2.textAlign = 'left';
+  }
+
+  function handleShopTap2(cx: number, cy: number): boolean {
+    if (phase2 !== 'shop') return false;
+    if (inRect2(cx, cy, shopLobbyBtnRect2())) { exitToLobby2(); return true; }
+    if (inRect2(cx, cy, shopFightBtnRect2())) { startCard2(); return true; }
+    for (let i = 0; i < shopOffers.length; i++) {
+      if (inRect2(cx, cy, shopCardRect2(i))) {
+        const o = shopOffers[i]!;
+        if (o.bought) return true;
+        if (state.coins < o.price) { shopNote = 'Замало монет'; shopNoteT = 1.5; return true; }
+        shopSelected = shopSelected === i ? -1 : i;
+        return true;
+      }
+    }
+    if (shopSelected >= 0) {
+      const { gx, gy } = screenToGridRun2(cx, cy);
+      if (!cellOccupiedRun2(gx, gy) && adjToBodyRun2(gx, gy)) {
+        const o = shopOffers[shopSelected]!;
+        if (buyCube(state, o.price)) {
+          state.run.build.push({ gx, gy, type: o.type });
+          const evs: RewardEvent[] = []; noteSeen(state, [o.type], evs);
+          o.bought = true; shopSelected = -1; save(state);
+        } else { shopNote = 'Замало монет'; shopNoteT = 1.5; }
+        return true;
+      }
+    }
+    return false;
   }
 
   const delayed2c: Delayed[] = [];
@@ -1662,9 +1803,9 @@ export function startCampaignBattle(opts: {
     if (phase2 !== 'result') return false;
     const isLast = currentStageIdx === totalStages - 1;
     if (!stageHeroWon2) {
-      // Defeat banner — two choices
-      if (inRect2(cx, cy, lossBtnRetry2())) { retryStage2(); return true; }
-      if (inRect2(cx, cy, lossBtnImprove2())) { exitToLobby2(); return true; }
+      // Defeat banner — primary "↺ Спробувати знову" (improve rect), "← Лоббі" (retry rect)
+      if (inRect2(cx, cy, lossBtnImprove2())) { retryStage2(); return true; }
+      if (inRect2(cx, cy, lossBtnRetry2())) { exitToLobby2(); return true; }
       return false;
     }
     if (stageHeroWon2 && isLast && sessionOver) {
@@ -1678,20 +1819,26 @@ export function startCampaignBattle(opts: {
     ev.preventDefault();
     _c2PdX = ev.clientX; _c2PdY = ev.clientY;
   }
+  function dispatchTap2(cx: number, cy: number): void {
+    if (phase2 === 'shop') { handleShopTap2(cx, cy); return; }
+    handleResultTap2(cx, cy);
+  }
+  let _c2HandledTap = false; // suppress the synthetic click that follows a pointerup
   function handlePointerUp2(ev: PointerEvent): void {
     ev.preventDefault();
     const dx = ev.clientX - _c2PdX, dy = ev.clientY - _c2PdY;
     const moved = _c2PdX < 0 || dx * dx + dy * dy > 400;
     _c2PdX = -1; _c2PdY = -1;
     if (moved) return;
-    handleResultTap2(ev.clientX, ev.clientY);
+    _c2HandledTap = true; // the click event right after must not re-fire (shop select toggles!)
+    dispatchTap2(ev.clientX, ev.clientY);
   }
   window.addEventListener('pointerdown', handlePointerDown2);
   window.addEventListener('pointerup', handlePointerUp2);
-  // Legacy click fallback
+  // Legacy click fallback — only when no pointerup already handled this tap.
   function handleClick2(ev: MouseEvent): void {
-    if (_c2PdX >= 0) return; // pointer events already handled
-    handleResultTap2(ev.clientX, ev.clientY);
+    if (_c2HandledTap) { _c2HandledTap = false; return; }
+    dispatchTap2(ev.clientX, ev.clientY);
   }
   window.addEventListener('click', handleClick2);
 
@@ -1716,6 +1863,7 @@ export function startCampaignBattle(opts: {
     // Always tick delayed2c so auto-exit fires even during result phase
     stepDelayed2c(rawDt);
     stepRewardOverlay2(rawDt);
+    if (shopNoteT > 0) shopNoteT -= rawDt;
 
     if (phase2 === 'card') {
       cardT2 -= rawDt;
@@ -1729,6 +1877,8 @@ export function startCampaignBattle(opts: {
       if (resultT2 <= 0 && !sessionOver) {
         handleStageEnd();
       }
+    } else if (phase2 === 'shop') {
+      simDt = 0; // freeze the battle behind the shop
     }
 
     physStep2((phase2 === 'fight' && hitstop2 > 0) ? 0 : simDt);
@@ -1772,6 +1922,14 @@ export function startCampaignBattle(opts: {
     drawStageProgressBar2();
     if (phase2 === 'result') drawResultBanner2();
     drawRewardOverlay2();
+
+    // Hero grid (read-only compact during fight) + shop overlay between stages.
+    if (phase2 === 'shop') {
+      drawShop2();
+    } else {
+      drawHeroGrid2();
+      drawWalletHUD2();
+    }
 
     rafId2 = requestAnimationFrame(frame2);
   }
