@@ -237,7 +237,9 @@ export function startCampaignBattle(opts: {
   const events2: Record<string, unknown>[] = [];
   function emit2(e: Record<string, unknown>): void { events2.push(e); }
 
-  let phase2: 'card' | 'fight' | 'result' | 'shop' = 'card';
+  let phase2: 'card' | 'fight' | 'result' | 'shop' | 'travel' = 'card';
+  let travelT2 = 0;
+  const TRAVEL_DUR2 = 1.7;   // seconds the hero walks to the next foe
   let winner2: Fighter | null = null;
   const actors2: Actor[] = [];
   const projectiles2: Projectile[] = [];
@@ -732,30 +734,33 @@ export function startCampaignBattle(opts: {
   /* --------------------------------------------------------------------------
      DRAW ROUTINES (identical visual to startGauntlet)
      ------------------------------------------------------------------------ */
+  // Beach parallax background (PixelLab scenes). bgScrollX2 advances on travel.
+  const bgSky2 = new Image(); bgSky2.src = '/sprites/bg_sky.png';
+  const bgGround2 = new Image(); bgGround2.src = '/sprites/bg_ground.png';
+  let bgScrollX2 = 0;
+  function bgReady2(im: HTMLImageElement): boolean { return im.complete && im.naturalWidth > 0; }
+  function drawTiledBg2(im: HTMLImageElement, y0: number, h: number, scroll: number): void {
+    const sW = im.naturalWidth * (h / im.naturalHeight);
+    let off = -(((scroll % sW) + sW) % sW);
+    ctx2.imageSmoothingEnabled = false;
+    for (let x = off; x < W2; x += sW) ctx2.drawImage(im, x, y0, sW, h);
+  }
   function drawArena2(): void {
-    const g = ctx2.createLinearGradient(0, 0, 0, H2);
-    g.addColorStop(0, '#141b27'); g.addColorStop(.55, '#10161f'); g.addColorStop(1, '#080b11');
-    ctx2.fillStyle = g; ctx2.fillRect(0, 0, W2, H2);
-    const hg = ctx2.createRadialGradient(W2 * 0.5, ground2, 10, W2 * 0.5, ground2, W2 * 0.7);
-    hg.addColorStop(0, 'rgba(60,90,140,0.18)'); hg.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx2.fillStyle = hg; ctx2.fillRect(0, 0, W2, H2);
-    ctx2.strokeStyle = 'rgba(120,150,190,0.10)'; ctx2.lineWidth = 2;
-    ctx2.beginPath(); ctx2.moveTo(0, ground2); ctx2.lineTo(W2, ground2); ctx2.stroke();
-    ctx2.fillStyle = '#161d2a';
-    ctx2.beginPath();
-    ctx2.moveTo(W2 * 0.5 - 60, ground2); ctx2.lineTo(W2 * 0.5 + 60, ground2);
-    ctx2.lineTo(W2, H2); ctx2.lineTo(0, H2); ctx2.closePath(); ctx2.fill();
-    for (let i = 1; i < 8; i++) {
-      const u = i / 8, y = ground2 + (H2 - ground2) * u * u;
-      ctx2.strokeStyle = `rgba(70,100,150,${0.22 * (1 - u)})`; ctx2.lineWidth = 1;
-      ctx2.beginPath(); ctx2.moveTo(0, y); ctx2.lineTo(W2, y); ctx2.stroke();
-    }
-    const vp = W2 * 0.5;
-    for (let i = -6; i <= 6; i++) {
-      if (i === 0) continue;
-      const topX = vp + i * 16, botX = vp + i * (W2 * 0.5 / 3);
-      ctx2.strokeStyle = 'rgba(70,100,150,0.10)'; ctx2.lineWidth = 1;
-      ctx2.beginPath(); ctx2.moveTo(topX, ground2); ctx2.lineTo(botX, H2); ctx2.stroke();
+    if (bgReady2(bgSky2) && bgReady2(bgGround2)) {
+      drawTiledBg2(bgSky2, 0, ground2, bgScrollX2 * 0.25);            // far sky+sea
+      drawTiledBg2(bgGround2, ground2, H2 - ground2, bgScrollX2 * 0.7); // near floor
+      ctx2.fillStyle = 'rgba(8,11,17,0.22)'; ctx2.fillRect(0, 0, W2, H2);
+      ctx2.fillStyle = 'rgba(8,11,17,0.30)'; ctx2.fillRect(0, ground2 - 2, W2, 3); // ground seam shade
+    } else {
+      const g = ctx2.createLinearGradient(0, 0, 0, H2);
+      g.addColorStop(0, '#141b27'); g.addColorStop(.55, '#10161f'); g.addColorStop(1, '#080b11');
+      ctx2.fillStyle = g; ctx2.fillRect(0, 0, W2, H2);
+      ctx2.strokeStyle = 'rgba(120,150,190,0.10)'; ctx2.lineWidth = 2;
+      ctx2.beginPath(); ctx2.moveTo(0, ground2); ctx2.lineTo(W2, ground2); ctx2.stroke();
+      ctx2.fillStyle = '#161d2a';
+      ctx2.beginPath();
+      ctx2.moveTo(W2 * 0.5 - 60, ground2); ctx2.lineTo(W2 * 0.5 + 60, ground2);
+      ctx2.lineTo(W2, H2); ctx2.lineTo(0, H2); ctx2.closePath(); ctx2.fill();
     }
     for (const d of dust2) {
       ctx2.globalAlpha = 0.10 + 0.18 * d.z;
@@ -1649,6 +1654,12 @@ export function startCampaignBattle(opts: {
     spike: '#ff5a3f', bastion: '#8fa6d6', heart: '#46d68c', balance: '#EAEFF5',
   };
 
+  // Travel: after the shop, the hero walks across the beach to the next foe.
+  function enterTravel2(): void {
+    phase2 = 'travel'; travelT2 = 0;
+    if (hero2) { hero2.advance = 0; hero2.knock = 0; hero2.knockV = 0; hero2.anim?.play('walk'); }
+  }
+
   function enterShop2(): void {
     phase2 = 'shop';
     currentStageIdx = state.run.stage;   // upcoming stage (winStage advanced it)
@@ -1867,7 +1878,7 @@ export function startCampaignBattle(opts: {
     if (phase2 !== 'shop') return false;
     if (shopAnim < 0.9) return true;   // swallow taps until the shop has settled in
     if (inRect2(cx, cy, shopLobbyBtnRect2())) { exitToLobby2(); return true; }
-    if (inRect2(cx, cy, shopFightBtnRect2())) { startCard2(); return true; }
+    if (inRect2(cx, cy, shopFightBtnRect2())) { enterTravel2(); return true; }
     for (let i = 0; i < shopOffers.length; i++) {
       if (inRect2(cx, cy, shopCardRect2(i))) {
         const o = shopOffers[i]!;
@@ -1993,6 +2004,11 @@ export function startCampaignBattle(opts: {
       }
     } else if (phase2 === 'shop') {
       simDt = 0; // freeze the battle as it slides away
+    } else if (phase2 === 'travel') {
+      simDt = 0;
+      travelT2 += rawDt;
+      bgScrollX2 += 230 * rawDt;       // world scrolls left → hero walks right
+      if (travelT2 >= TRAVEL_DUR2) startCard2();
     }
 
     physStep2((phase2 === 'fight' && hitstop2 > 0) ? 0 : simDt);
@@ -2031,13 +2047,21 @@ export function startCampaignBattle(opts: {
       drawParticles2();
       ctx2.restore();
       drawVignetteAndLight2();
-      for (const f of fighters2) { if (f.alive) drawHPBar2(f); }
-      drawATB2();
-      drawFloaters2();
-      drawLog2();
-      drawHUD2();
+      if (phase2 !== 'travel') {
+        for (const f of fighters2) { if (f.alive) drawHPBar2(f); }
+        drawATB2();
+        drawFloaters2();
+        drawLog2();
+        drawHUD2();
+        if (phase2 === 'result') drawResultBanner2();
+      } else {
+        // Travelling to the next foe — show progress + a marching label.
+        ctx2.textAlign = 'center'; ctx2.textBaseline = 'alphabetic';
+        ctx2.font = 'bold 16px system-ui'; ctx2.fillStyle = 'rgba(220,230,245,0.85)';
+        ctx2.fillText('Прямує далі…', W2 / 2, H2 * 0.16);
+        ctx2.textAlign = 'left';
+      }
       drawStageProgressBar2();
-      if (phase2 === 'result') drawResultBanner2();
     }
     ctx2.restore(); // end battle region
 
