@@ -9,6 +9,8 @@ import type { Build } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
 import { accountXpToNext } from '../game/meta';
 import { stageCount, stageTier, stuckHint } from '../game/campaign';
+import { SpriteAnimator } from './sprite';
+import { heroSprite } from './sprite-manifest';
 
 /* ===========================================================================
    PUBLIC ENTRY POINT
@@ -51,6 +53,7 @@ resize();
 let t = 0;
 let raf = 0;
 let lastNow = performance.now();
+const heroAnim = new SpriteAnimator(heroSprite());
 
 /* ===========================================================================
    COLORS / PALETTE  (match gauntlet's dark diorama)
@@ -495,6 +498,7 @@ function frame(now: number): void {
   // Update toast timer
   if (toastTimer > 0) toastTimer -= dt;
   stepCounters(dt);
+  heroAnim.step(dt);
 
   const ground  = heroGroundY();
   const cx      = W * 0.5;
@@ -505,7 +509,11 @@ function frame(now: number): void {
   drawBackground();
   drawPedestal();
   drawHeroShadow(cx, ground, hScale);
-  drawCreatureIdle(opts.state.run.build, cx, ground, hScale, t);
+  // Hero billboard sprite (idle); falls back to the cube creature until loaded.
+  const lobbyScale = Math.min(W, H) * 0.62 / 240;
+  if (!heroAnim.draw(ctx, cx, ground, lobbyScale, 1, 1, 1, 0)) {
+    drawCreatureIdle(opts.state.run.build, cx, ground, hScale, t);
+  }
   drawHUD();
   drawNextGoal();
   drawButtons(pulse);

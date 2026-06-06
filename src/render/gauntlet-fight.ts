@@ -810,17 +810,24 @@ export function startCampaignBattle(opts: {
     }
   }
 
-  const SPRITE_BASE2 = 0.85; // 240px PixelLab frame → ~200px on-screen at scale 1
+  // Sprite scale from the battle-region height → creatures grow on big desktop
+  // screens (240px PixelLab frame → ~60% of the region tall at scale 1).
+  function spriteScale2(f: Fighter): number { return f.scale * (H2 * 0.70 / 240); }
+  function spriteBaseY2(f: Fighter): number { return ground2 - (1 - depthScale2(f)) * 120; }
+  // World-Y just above the head (sprite content-top if loaded, else cube height).
+  function headWorldY2(f: Fighter): number {
+    return (f.anim && f.anim.loaded())
+      ? f.anim.headTopY(spriteBaseY2(f), spriteScale2(f), 1) - 18
+      : ground2 - lift2_(f) - 3.4 * PX2 * f.scale - 46;
+  }
   function drawCreature2(f: Fighter): void {
     if (!f.alive) return;
     const sx = creatureScreenX2(f);
-    const lift2 = (1 - depthScale2(f)) * 120;
-    const baseY = ground2 - lift2;
-    // PixelLab sprite (with squash + hit-flash); fall back to procedural cubes.
+    const baseY = spriteBaseY2(f);
+    // PixelLab sprite (feet on ground, squash + hit-flash); fall back to cubes.
     if (f.anim && f.anim.loaded()) {
-      const scale = f.scale * SPRITE_BASE2;
       const sqX = 1 - f.squash * 0.10, sqY = 1 + f.squash * 0.12;
-      if (f.anim.draw(ctx2, sx, baseY, scale, f.face, sqX, sqY, f.flash)) return;
+      if (f.anim.draw(ctx2, sx, baseY, spriteScale2(f), f.face, sqX, sqY, f.flash)) return;
     }
     drawCreaturePixels2(f, sx, baseY, 1, (f.face > 0 ? 1.5 : 0));
   }
@@ -914,7 +921,8 @@ export function startCampaignBattle(opts: {
 
   function drawHPBar2(f: Fighter): void {
     const sx = creatureScreenX2(f) * zoom2 + (1 - zoom2) * W2 / 2 + camX2;
-    const top = (ground2 - lift2_(f) - 3.4 * PX2 * f.scale - 46) * zoom2 + (1 - zoom2) * H2 / 2 + camY2;
+    // Bar above the head (sprite-aware), mapped through the camera zoom like sx.
+    const top = headWorldY2(f) * zoom2 + (1 - zoom2) * H2 / 2 + camY2;
     const bw = 120 * (f.boss ? 1.25 : 1), bh = 11, x = sx - bw / 2, y = top;
     ctx2.font = 'bold 13px system-ui'; ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
     ctx2.fillStyle = f.accent; ctx2.fillText(f.name, x, y - 6);
@@ -944,7 +952,7 @@ export function startCampaignBattle(opts: {
     for (const f of fighters2) {
       if (!f.alive) continue;
       const sx = creatureScreenX2(f) * zoom2 + (1 - zoom2) * W2 / 2 + camX2;
-      const top = (ground2 - lift2_(f) - 3.4 * PX2 * f.scale - 46) * zoom2 + (1 - zoom2) * H2 / 2 + camY2;
+      const top = headWorldY2(f) * zoom2 + (1 - zoom2) * H2 / 2 + camY2;
       const bw = 120 * (f.boss ? 1.25 : 1), x = sx - bw / 2, y = top + 16;
       ctx2.fillStyle = 'rgba(0,0,0,0.4)'; ctx2.fillRect(x, y, bw, 4);
       ctx2.fillStyle = '#7fc8ff'; ctx2.fillRect(x, y, bw * f.atb, 4);

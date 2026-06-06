@@ -38,6 +38,38 @@ function ready(i: HTMLImageElement | false | undefined): i is HTMLImageElement {
   return !!i && i.complete && i.naturalWidth > 0;
 }
 
+// ---------------------------------------------------------------------------
+// Content bounding box per frame (opaque-pixel extent). Used to anchor every
+// frame by its FEET (content bottom) + horizontal content centre, so the sprite
+// sits on the ground and an idle's breathing doesn't make it drift/jitter.
+// ---------------------------------------------------------------------------
+interface BBox { cx: number; bottom: number; top: number; w: number; h: number }
+const bboxCache = new Map<string, BBox>();
+let measureCanvas: HTMLCanvasElement | null = null;
+function bbox(src: string, im: HTMLImageElement): BBox {
+  const hit = bboxCache.get(src);
+  if (hit) return hit;
+  const w = im.naturalWidth, h = im.naturalHeight;
+  let box: BBox = { cx: w / 2, bottom: h, top: 0, w, h };
+  try {
+    if (!measureCanvas) measureCanvas = document.createElement('canvas');
+    measureCanvas.width = w; measureCanvas.height = h;
+    const g = measureCanvas.getContext('2d', { willReadFrequently: true })!;
+    g.clearRect(0, 0, w, h); g.drawImage(im, 0, 0);
+    const d = g.getImageData(0, 0, w, h).data;
+    let minX = w, maxX = -1, minY = h, maxY = -1;
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        if ((d[(row + x) * 4 + 3] ?? 0) > 24) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+      }
+    }
+    if (maxX >= 0) box = { cx: (minX + maxX + 1) / 2, bottom: maxY + 1, top: minY, w, h };
+  } catch { /* tainted/headless — keep frame-centre fallback */ }
+  bboxCache.set(src, box);
+  return box;
+}
+
 export class SpriteAnimator {
   private cur = 'idle';
   private frame = 0;
@@ -76,22 +108,29 @@ export class SpriteAnimator {
     return ready(img(first));
   }
 
+  private srcFor(): { src: string | undefined; im: HTMLImageElement | false | undefined } {
+    const a = this.def.anims[this.cur];
+    const src = a?.frames[this.frame];
+    return { src, im: img(src) };
+  }
+
   /**
-   * Draw the current frame at (x, baseY) with its pivot, scaled by `scale`
-   * (multiplier on the frame's natural pixel size). `face<0` mirrors X.
-   * Returns false if the frame isn't decoded yet (caller may fall back).
+   * Draw the current frame so its FEET (content bottom) sit at (x, baseY) and
+   * its content centre aligns to x. `scale` multiplies the frame's natural px.
+   * `face<0` mirrors X. Returns false if the frame isn't decoded yet.
    */
   draw(
     ctx: CanvasRenderingContext2D,
     x: number, baseY: number, scale: number,
     face: 1 | -1, sqX = 1, sqY = 1, flash = 0,
   ): boolean {
-    const a = this.def.anims[this.cur];
-    const im = img(a?.frames[this.frame]);
-    if (!ready(im)) return false;
-    const nw = im.naturalWidth, nh = im.naturalHeight;
-    const dw = nw * scale * sqX, dh = nh * scale * sqY;
-    const dx = x - dw * this.def.pivotX, dy = baseY - dh * this.def.pivotY;
+    const { src, im } = this.srcFor();
+    if (!ready(im) || !src) return false;
+    const bb = bbox(src, im);
+    const dw = im.naturalWidth * scale * sqX, dh = im.naturalHeight * scale * sqY;
+    // anchor content-centre-x → x, content-bottom → baseY
+    const dx = x - bb.cx * scale * sqX;
+    const dy = baseY - bb.bottom * scale * sqY;
     ctx.save();
     if (face < 0) { ctx.translate(x, 0); ctx.scale(-1, 1); ctx.translate(-x, 0); }
     ctx.imageSmoothingEnabled = false;
@@ -105,5 +144,13 @@ export class SpriteAnimator {
     }
     ctx.restore();
     return true;
+  }
+
+  /** Screen Y of the content top (head) when drawn at (baseY, scale) — for HUD placement above the head. */
+  headTopY(baseY: number, scale: number, sqY = 1): number {
+    const { src, im } = this.srcFor();
+    if (!ready(im) || !src) return baseY - 240 * scale * sqY;
+    const bb = bbox(src, im);
+    return baseY - (bb.bottom - bb.top) * scale * sqY;
   }
 }
