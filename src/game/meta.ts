@@ -25,6 +25,8 @@ export interface SaveState {
   heroBuild: Build;
   coins: number;
   campaign: { level: number; stage: number };
+  /** First-session builder coach seen? Optional so older saves/test literals omit it. */
+  onboarded?: boolean;
 }
 
 export interface FightResult {
@@ -148,6 +150,7 @@ export function defaultState(): SaveState {
     heroBuild,
     coins: 0,
     campaign: { level: 1, stage: 0 },
+    onboarded: false,
   };
 }
 
@@ -304,6 +307,7 @@ export function load(storage?: StorageLike): SaveState {
               typeof (parsed.campaign as Record<string, unknown>)['stage'] === 'number'
                 ? { level: (parsed.campaign as { level: number; stage: number }).level, stage: (parsed.campaign as { level: number; stage: number }).stage }
                 : { level: 1, stage: 0 },
+            onboarded: parsed.onboarded === true,
           };
         }
       }

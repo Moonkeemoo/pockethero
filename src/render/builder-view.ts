@@ -7,7 +7,7 @@
 import { deriveStats, deriveMoveset, CUBES } from '../index';
 import type { Build, PlacedCube, Trait, Stats } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
-import { xpToNext, grantLootInto } from '../game/meta';
+import { xpToNext, grantLootInto, save as saveMeta } from '../game/meta';
 import { detectTraits } from '../derive/detectors';
 import { SYNERGY_DEFS } from '../data/traits';
 import { MOVES, MOVE_IDS } from '../data/moves';
@@ -601,6 +601,69 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
 
   let mouseX = -1, mouseY = -1;
   let t = 0;
+
+  // ---- ONBOARDING COACH (§A "the aha" / backlog #10) ----
+  // 3-step first-entry coach: place a Сила next to the core → make 3 in a line →
+  // «Шип» technique fires. Gated on state.onboarded; persists once seen/skipped.
+  let coachDone = opts.state.onboarded === true;
+  let coachCelebrated = false;          // fired the reveal toast yet?
+  let coachSkipHit: { x: number; y: number; w: number; h: number } | null = null;
+
+  function forceCount(): number { return build.reduce((n, p) => n + (p.type === 'force' ? 1 : 0), 0); }
+  function hasSpike(): boolean { return traitsCache.some(tr => tr.key === 'spike'); }
+  /** Longest straight run of force cubes (horizontal or vertical). */
+  function longestForceLine(): number {
+    const set = new Set(build.filter(p => p.type === 'force').map(p => p.gx + ',' + p.gy));
+    let best = 0;
+    for (const p of build) {
+      if (p.type !== 'force') continue;
+      for (const [dx, dy] of [[1, 0], [0, 1]] as [number, number][]) {
+        if (set.has((p.gx - dx) + ',' + (p.gy - dy))) continue; // not the run start
+        let len = 0, gx = p.gx, gy = p.gy;
+        while (set.has(gx + ',' + gy)) { len++; gx += dx; gy += dy; }
+        if (len > best) best = len;
+      }
+    }
+    return best;
+  }
+  /** Current coach step: 1 place first Сила · 2 line them up · 3 done(spike). */
+  function coachStep(): 1 | 2 | 3 {
+    if (hasSpike()) return 3;
+    if (forceCount() >= 1) return 2;
+    return 1;
+  }
+  /**
+   * The next cell to place a Сила for the «Шип» line. If a force run already
+   * exists, point at the empty cell that EXTENDS the longest run; otherwise at a
+   * legal cell next to the core. Must be placeable (unlocked + touching body).
+   */
+  function coachTargetCell(): { gx: number; gy: number } | null {
+    const forces = build.filter(p => p.type === 'force');
+    if (forces.length > 0) {
+      const set = new Set(forces.map(p => p.gx + ',' + p.gy));
+      let best: { len: number; ext: { gx: number; gy: number } } | null = null;
+      for (const p of forces) {
+        for (const [dx, dy] of [[1, 0], [0, 1]] as [number, number][]) {
+          if (set.has((p.gx - dx) + ',' + (p.gy - dy))) continue; // not a run start
+          let len = 0, gx = p.gx, gy = p.gy;
+          while (set.has(gx + ',' + gy)) { len++; gx += dx; gy += dy; }
+          // candidate extensions: just past the far end, and just before the start
+          for (const [ex, ey] of [[gx, gy], [p.gx - dx, p.gy - dy]] as [number, number][]) {
+            if (!cellOccupied(ex, ey) && cellUnlocked(ex, ey) && orthAdjToBody(ex, ey)) {
+              if (!best || len >= best.len) best = { len, ext: { gx: ex, gy: ey } };
+            }
+          }
+        }
+      }
+      if (best) return best.ext;
+    }
+    const core = build.find(p => p.type === 'core'); if (!core) return null;
+    for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]] as [number, number][]) {
+      const gx = core.gx + dx, gy = core.gy + dy;
+      if (!cellOccupied(gx, gy) && cellUnlocked(gx, gy)) return { gx, gy };
+    }
+    return null;
+  }
 
   // ---- GEOMETRY — responsive: portrait uses bottom-strip layout ----
   function isPortrait(): boolean { return W < PORTRAIT_BREAKPOINT; }
@@ -2074,6 +2137,13 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     if (dx * dx + dy * dy > 400) return;
     _bPdX = -1; _bPdY = -1;
     // --- same logic as original onCanvasClick ---
+    // Onboarding coach: tap "Пропустити →" to dismiss the coach for good.
+    if (!coachDone && coachSkipHit && inRect(mx, my, coachSkipHit)) {
+      coachDone = true;
+      opts.state.onboarded = true;
+      saveMeta(opts.state);
+      return;
+    }
     if (showCodex) { showCodex = false; return; }
     if (inRect(mx, my, fightBtnRect)) {
       if (build.length > 1) opts.onFight(build.map(p => ({ ...p })));
@@ -2116,6 +2186,67 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   }
 
   // ---- DRAW BUILDER (verbatim from poc lines 2504-2516) ----
+  function rrB(x: number, y: number, w: number, h: number, r: number): void {
+    ctx.beginPath();
+    if ((ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect) {
+      (ctx as CanvasRenderingContext2D & { roundRect: (x: number, y: number, w: number, h: number, r: number) => void }).roundRect(x, y, w, h, r);
+    } else { ctx.rect(x, y, w, h); }
+  }
+
+  // ---- ONBOARDING COACH overlay ----
+  function drawCoach(): void {
+    coachSkipHit = null;
+    if (coachDone) return;
+    const step = coachStep();
+    const line = step === 1
+      ? 'Постав кубик Сили (червоний) поряд з Ядром'
+      : `Постав 3 Сили в один ряд, щоб відкрити «Шип»  (${Math.min(3, longestForceLine())}/3)`;
+
+    ctx.save();
+    // Top banner
+    ctx.font = 'bold 15px "Segoe UI",system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(line).width + 40;
+    const bh = 38;
+    const by = isPortrait() ? portraitGridTop() + 6 : 64;
+    const bx = W / 2 - tw / 2;
+    ctx.fillStyle = 'rgba(10,16,28,0.94)';
+    rrB(bx, by, tw, bh, 10); ctx.fill();
+    ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 1.5;
+    rrB(bx, by, tw, bh, 10); ctx.stroke();
+    ctx.fillStyle = '#ffe7a0';
+    ctx.fillText(line, W / 2, by + bh / 2);
+
+    // Steps 1–2: pulse-highlight the next cell to place + finger cue
+    if (step < 3) {
+      const tc = coachTargetCell();
+      if (tc) {
+        const s = gridToScreen(tc.gx, tc.gy);
+        const cell = BUILD_CELL * builderZoom;
+        const pulse = 0.5 + 0.5 * Math.sin(t * 5);
+        ctx.strokeStyle = `rgba(255,210,74,${0.45 + 0.45 * pulse})`;
+        ctx.lineWidth = 3;
+        rrB(s.x - cell / 2, s.y - cell / 2, cell, cell, 5); ctx.stroke();
+        ctx.font = '26px system-ui';
+        ctx.fillText('👆', s.x + 8, s.y + cell / 2 + 20 + Math.sin(t * 4) * 5);
+      }
+    }
+
+    // Skip button (directly under the banner)
+    const sbw = 116, sbh = 28;
+    const sbx = W / 2 - sbw / 2, sby = by + bh + 8;
+    ctx.fillStyle = 'rgba(20,28,44,0.85)';
+    rrB(sbx, sby, sbw, sbh, 8); ctx.fill();
+    ctx.strokeStyle = 'rgba(120,140,180,0.5)'; ctx.lineWidth = 1;
+    rrB(sbx, sby, sbw, sbh, 8); ctx.stroke();
+    ctx.fillStyle = '#9fb0c8'; ctx.font = 'bold 12px "Segoe UI",system-ui,sans-serif';
+    ctx.fillText('Пропустити →', W / 2, sby + sbh / 2);
+    coachSkipHit = { x: sbx, y: sby, w: sbw, h: sbh };
+
+    ctx.restore();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  }
+
   function drawBuilder(): void {
     drawArena();
     drawBuilderGrid();
@@ -2127,6 +2258,7 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     drawInvTooltip();
     drawBuilderTooltip();
     if (showCodex) drawCodex();
+    drawCoach();
     drawToasts();
   }
 
@@ -2141,6 +2273,15 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
     t += rawDt;
     stepToasts(rawDt);
 
+    // Coach: fire the reveal the instant «Шип» forms, then persist + retire it.
+    if (!coachDone && !coachCelebrated && hasSpike()) {
+      coachCelebrated = true;
+      coachDone = true;
+      opts.state.onboarded = true;
+      saveMeta(opts.state);
+      toast('Техніку відкрито: «Шип» ⚔ — досяжність + атака!', '#ffd24a');
+    }
+
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
@@ -2154,6 +2295,12 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
   createActionButtons();
   setupInput();
   recompute();
+  // First-entry coach: guarantee the «Шип» aha is reachable (≥3 Сила to place)
+  // and pre-select Сила so the player just taps cells.
+  if (!coachDone) {
+    if ((opts.state.inventory['force'] ?? 0) < 3) opts.state.inventory['force'] = 3;
+    selectedType = 'force';
+  }
   // Show reward toast if returning from a fight
   if (opts.rewardEvents && opts.rewardEvents.length > 0) {
     const parts: string[] = [];

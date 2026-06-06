@@ -1510,7 +1510,10 @@ export function startCampaignBattle(opts: {
   }
 
   function startCard2(): void {
-    phase2 = 'card'; cardT2 = CARD_DUR2; winner2 = null;
+    // §A onboarding: the very first fight's card is shortened — don't make a new
+    // player wait through ceremony before they've earned any investment.
+    const firstEver = campaignLevel === 1 && currentStageIdx === 0;
+    phase2 = 'card'; cardT2 = firstEver ? 1.2 : CARD_DUR2; winner2 = null;
     reseedForCampaignStage();
     buildCampaignFighters();
     actors2.length = 0; projectiles2.length = 0; delayed2.length = 0;
