@@ -686,10 +686,13 @@ export function startCampaignBattle(opts: {
       f.knockV += ka * dt; f.knock += f.knockV * dt;
       const a2 = actors2.find(x => x.f === f);
       let want = 0;
+      // With a sprite the attack ANIMATION carries the strike, so the body only
+      // takes a small step in — a full-gap lunge (cube-era) would desync.
+      const lungeMul = (f.anim && f.anim.loaded()) ? 0.3 : 1.0;
       if (a2) {
-        if (a2.stage === 'windup') want = -0.12;
-        else if (a2.stage === 'release' && !a2.move.ranged) want = 1.0;
-        else if (a2.stage === 'release') want = 0.15;
+        if (a2.stage === 'windup') want = -0.12 * lungeMul;
+        else if (a2.stage === 'release' && !a2.move.ranged) want = 1.0 * lungeMul;
+        else if (a2.stage === 'release') want = 0.15 * lungeMul;
       }
       const other2 = (f === hero2 ? enemy2 : hero2);
       const reach2 = (Math.abs(other2.homeX - f.homeX) - 3.6 * PX2);
@@ -1190,9 +1193,14 @@ export function startCampaignBattle(opts: {
 
   function drawCardSide2(f: Fighter, cx: number, baseY: number, faceDir: 1 | -1): void {
     const cardScale = f.boss ? 1.25 : 1.1;
-    const savedFace = f.face; f.face = faceDir;
-    drawCreaturePixels2(f, cx, baseY, cardScale, (faceDir > 0 ? 0 : 1.5));
-    f.face = savedFace;
+    // PixelLab sprite in the announcement (bigger than in-battle); cube fallback.
+    const drawn = (f.anim && f.anim.loaded())
+      && f.anim.draw(ctx2, cx, baseY, spriteScale2(f) * 1.35, faceDir, 1, 1, 0);
+    if (!drawn) {
+      const savedFace = f.face; f.face = faceDir;
+      drawCreaturePixels2(f, cx, baseY, cardScale, (faceDir > 0 ? 0 : 1.5));
+      f.face = savedFace;
+    }
     ctx2.textAlign = 'center';
     ctx2.fillStyle = f.accent; ctx2.font = 'bold 26px system-ui';
     ctx2.fillText(f.name, cx, baseY + 44);
@@ -1518,7 +1526,7 @@ export function startCampaignBattle(opts: {
     enemy2 = makeFighter2(enemyEntry);
     // PixelLab billboard sprites (fall back to procedural cubes until loaded).
     hero2.anim = new SpriteAnimator(heroSprite());
-    enemy2.anim = new SpriteAnimator(enemySprite(spec.name, spec.boss));
+    enemy2.anim = new SpriteAnimator(enemySprite(spec.archetype, spec.boss));
     // D3 — permanent account HP bonus folded onto the hero.
     const hpAdd = accountStatBonus(state).maxHpAdd;
     if (hpAdd > 0) { hero2.maxHP += hpAdd; hero2.hp = hero2.maxHP; hero2.hpShown = hero2.maxHP; }

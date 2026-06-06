@@ -35,6 +35,7 @@ export interface EnemySpec {
   build: Build;
   scale: number;
   boss: boolean;
+  archetype: string;   // melee | ranged | mage | tank — selects the enemy sprite
 }
 
 // Local mulberry32 (no external dep)
@@ -136,7 +137,7 @@ export function genEnemy(level: number, stage: number): EnemySpec {
   const boss = tier === 'boss';
   const name = `${TIER_NAME_UA[tier]}-${ARCHETYPE_NAME_UA[archetype]}`;
 
-  return { name, build, scale, boss };
+  return { name, build, scale, boss, archetype };
 }
 
 // ---------------------------------------------------------------------------
