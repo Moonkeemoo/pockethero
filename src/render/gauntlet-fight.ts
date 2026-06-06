@@ -12,7 +12,6 @@ import type { Build } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
 import { addKillReward } from '../game/meta';
 import { genEnemy, stageCount, stageTier, stageReward } from '../game/campaign';
-import { sfx } from './sfx';
 
 /* ============================================================================
    TYPES
@@ -1013,8 +1012,10 @@ export function startCampaignBattle(opts: {
      A small homing-token system: on a stage win, coins + a cube fly from the
      dead enemy to the run-tally pills (top-right), which scale-bump on landing.
      ------------------------------------------------------------------------ */
-  interface RewardToken { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; dur: number; col: string; kind: 'coin' | 'cube' }
+  interface RewardToken { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; dur: number; col: string; kind: 'coin' | 'cube'; rar?: string }
   const rewardTokens2: RewardToken[] = [];
+  const RARITY_COL2: Record<string, string> = { common: '#aab4c4', rare: '#5aa0ff', epic: '#c060ff', legendary: '#ffcd60' };
+  let winCubeFlavour2: { name: string; rar: string; isNew: boolean } | null = null;
   let runCoins2 = 0;        // coins earned this run (display tally; lerps up as tokens land)
   let runCubes2 = 0;        // cubes earned this run
   let coinShare2 = 0;       // coins added per landing coin-token (so tally hits exact total)
@@ -1046,6 +1047,7 @@ export function startCampaignBattle(opts: {
       rewardTokens2.push({
         x: ex, y: ey, sx: ex, sy: ey, tx: ct.x, ty: ct.y,
         t: -0.20, dur: 0.62, col: CUBES[reward.cube]?.col ?? '#9fd0ff', kind: 'cube',
+        rar: CUBES[reward.cube]?.rarity ?? 'common',
       });
     }
   }
@@ -1064,14 +1066,14 @@ export function startCampaignBattle(opts: {
       tk.x = tk.sx + (tk.tx - tk.sx) * e;
       tk.y = tk.sy + (tk.ty - tk.sy) * e - Math.sin(u * Math.PI) * 46; // arc lift
       if (u >= 1) {
-        if (tk.kind === 'coin') { runCoins2 += coinShare2; coinPillBump2 = 0.28; sfx.coin(t2); }
-        else { runCubes2 += 1; cubePillBump2 = 0.32; sfx.cube(); }
+        if (tk.kind === 'coin') { runCoins2 += coinShare2; coinPillBump2 = 0.28; }
+        else { runCubes2 += 1; cubePillBump2 = 0.32; }
         rewardTokens2.splice(i, 1);
       }
     }
     for (let i = levelUpPops2.length - 1; i >= 0; i--) {
       const p = levelUpPops2[i]!;
-      if (p.delay > 0) { p.delay -= dt; if (p.delay <= 0) sfx.levelUp(); continue; }
+      if (p.delay > 0) { p.delay -= dt; continue; }
       p.t += dt;
       if (p.t > 1.6) levelUpPops2.splice(i, 1);
     }
@@ -1114,6 +1116,12 @@ export function startCampaignBattle(opts: {
         ctx2.fillRect(tk.x - 5, tk.y - 5, 10, 10);
         ctx2.fillStyle = 'rgba(255,255,255,0.32)';
         ctx2.fillRect(tk.x - 5, tk.y - 5, 10, 3);
+        // Rarity ring for rare+ cubes (§D.4)
+        if (tk.rar && tk.rar !== 'common') {
+          ctx2.strokeStyle = RARITY_COL2[tk.rar] ?? '#fff';
+          ctx2.lineWidth = 2;
+          ctx2.strokeRect(tk.x - 7, tk.y - 7, 14, 14);
+        }
       }
       ctx2.restore();
     }
@@ -1244,6 +1252,16 @@ export function startCampaignBattle(opts: {
       ctx2.fillText('Етап пройдено!', 0, 0);
       ctx2.shadowBlur = 0;
       ctx2.restore();
+      // §D.4 cube flavour line (rare+ or first-ever)
+      if (winCubeFlavour2 && (winCubeFlavour2.isNew || winCubeFlavour2.rar !== 'common') && winPopT2 > 0.2) {
+        const rcol = RARITY_COL2[winCubeFlavour2.rar] ?? '#fff';
+        ctx2.globalAlpha = Math.min(1, (winPopT2 - 0.2) * 5);
+        ctx2.textAlign = 'center'; ctx2.textBaseline = 'middle';
+        ctx2.font = 'bold 16px system-ui'; ctx2.fillStyle = rcol;
+        const tag = winCubeFlavour2.isNew ? 'Новий тип: ' : '';
+        ctx2.fillText(`${tag}${winCubeFlavour2.name}`, W2 / 2, H2 * 0.45 + 30);
+        ctx2.globalAlpha = 1;
+      }
       ctx2.restore(); ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
       return;
     }
@@ -1523,7 +1541,6 @@ export function startCampaignBattle(opts: {
     log2.length = 0;
     const tier = stageTier(campaignLevel, currentStageIdx);
     const tierLabel = tier === 'boss' ? 'БОС' : tier === 'elite' ? 'ЕЛІТ' : 'МІНОР';
-    if (tier === 'boss') sfx.bossIntro();
     pushLog2(`— Рівень ${campaignLevel} · Етап ${currentStageIdx + 1}/${totalStages} [${tierLabel}] —`, '#9fb0c8');
     pushLog2(`${hero2.name} проти ${enemy2.name}`, '#9fb0c8');
   }
@@ -1543,18 +1560,23 @@ export function startCampaignBattle(opts: {
       // §D.1 stage-win heartbeat — short window, coin/cube spray + node tick
       resultT2 = WIN_POP_DUR2;
       hitstop2 = Math.max(hitstop2, 0.08);
-      spawnRewardSpray2(stageReward(campaignLevel, currentStageIdx));
+      const rw = stageReward(campaignLevel, currentStageIdx);
+      spawnRewardSpray2(rw);
       nodeTickT2 = 0.0001;
-      sfx.stageWin();
+      // §D.4 rarity flavour + first-ever "Новий тип" callout
+      winCubeFlavour2 = null;
+      if (rw.cube) {
+        const rar = CUBES[rw.cube]?.rarity ?? 'common';
+        const isNew = !(state.seenTypes ?? []).includes(rw.cube);
+        winCubeFlavour2 = { name: CUBES[rw.cube]?.name ?? rw.cube, rar, isNew };
+      }
     } else if (stageHeroWon2 && isLast) {
       // §D.2 boss cleared → level-complete ceremony (longer beat)
       resultT2 = LEVELCLEAR_DUR2;
       spawnRewardSpray2(stageReward(campaignLevel, currentStageIdx));
-      sfx.levelComplete();
     } else {
       // Defeat — full banner, time to read + tap
       resultT2 = RESULT_DUR2;
-      sfx.loss();
     }
   }
 
@@ -1567,6 +1589,9 @@ export function startCampaignBattle(opts: {
       rewards.push(...rewardEvents);
       stagesWon++;
       state.campaign.stage = currentStageIdx + 1;
+      state.lossStreak = 0; // progress made — clear the stuck-stage streak
+
+
 
       // §D.3 — queue a level-up pop per levelUp event (staggered)
       let luDelay = 0.15;
@@ -1594,6 +1619,14 @@ export function startCampaignBattle(opts: {
       // Hero defeated — checkpoint stays at current stage. No auto-exit: the
       // "almost, not over" banner waits for the player to pick a path (§C).
       sessionOver = true;
+      // Track consecutive losses on this exact stage (§C stuck-stage hint).
+      const ls = state.lossStage;
+      if (ls && ls.level === campaignLevel && ls.stage === currentStageIdx) {
+        state.lossStreak = (state.lossStreak ?? 0) + 1;
+      } else {
+        state.lossStreak = 1;
+        state.lossStage = { level: campaignLevel, stage: currentStageIdx };
+      }
     }
   }
 

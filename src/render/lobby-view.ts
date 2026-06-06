@@ -8,8 +8,7 @@ import { CUBES } from '../index';
 import type { Build } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
 import { xpToNext, CHEST_COST } from '../game/meta';
-import { stageCount, stageTier } from '../game/campaign';
-import { sfx } from './sfx';
+import { stageCount, stageTier, stuckHint } from '../game/campaign';
 
 /* ===========================================================================
    PUBLIC ENTRY POINT
@@ -18,7 +17,7 @@ export function startLobby(opts: {
   state: SaveState;
   onBattle: () => void;
   onBuilder: () => void;
-  onChest: () => { ok: boolean; cube?: string };
+  onChest: () => { ok: boolean; cube?: string; isNew?: boolean };
   rewardEvents?: RewardEvent[];
   lastOutcome?: 'levelCleared' | 'defeated';
 }): () => void {
@@ -419,6 +418,7 @@ if (opts.rewardEvents && opts.rewardEvents.length > 0) {
   const parts: string[] = [];
   let totalXP = 0, totalCoins = 0, levelUps = 0;
   const cubes: string[] = [];
+  const newTypes: string[] = [];
   const infoTexts: string[] = [];
   for (const ev of opts.rewardEvents) {
     if (ev.kind === 'xp')      totalXP    += ev.n;
@@ -426,12 +426,14 @@ if (opts.rewardEvents && opts.rewardEvents.length > 0) {
     if (ev.kind === 'levelUp') levelUps    = ev.level;
     if (ev.kind === 'cube')    cubes.push(ev.cube);
     if (ev.kind === 'loot')    cubes.push(...ev.cubes);
+    if (ev.kind === 'newType') newTypes.push(CUBES[ev.cube]?.name ?? ev.cube);
     if (ev.kind === 'info')    infoTexts.push(ev.text);
   }
   if (totalXP > 0)    parts.push(`+${totalXP} XP`);
   if (totalCoins > 0) parts.push(`+${totalCoins} монет`);
   if (levelUps > 0)   parts.push(`Рівень ${levelUps}!`);
   if (cubes.length > 0) parts.push(`+${cubes.length} кубик${cubes.length > 1 ? 'ів' : ''}`);
+  if (newTypes.length > 0) parts.push(`Новий тип: ${newTypes.join(', ')}`);
   for (const info of infoTexts) parts.push(info);
   if (parts.length > 0) {
     toastText  = parts.join(' · ');
@@ -521,6 +523,10 @@ function nextGoalLine(): string {
   const s = opts.state;
   const lvl = s.campaign.level, stg = s.campaign.stage, total = stageCount(lvl);
   if (opts.lastOutcome === 'defeated') {
+    // After repeated losses on the same stage, upgrade to a concrete tip (§C).
+    if ((s.lossStreak ?? 0) >= 3) {
+      return `Підказка: ${stuckHint(lvl, stg)}`;
+    }
     const tier = stageTier(lvl, stg);
     const tn = tier === 'boss' ? ' (Бос)' : tier === 'elite' ? ' (Еліт)' : '';
     return `Далі: підсиль героя — застряг на Етапі ${stg + 1}${tn}`;
@@ -580,6 +586,7 @@ type ChestPhase = 'idle' | 'rattle' | 'burst' | 'reveal';
 let chestPhase: ChestPhase = 'idle';
 let chestT = 0;
 let chestCube: string | null = null;
+let chestNew = false;
 let chestParts: Array<{ x: number; y: number; vx: number; vy: number; life: number; col: string }> = [];
 
 function chestActive(): boolean { return chestPhase !== 'idle'; }
@@ -589,7 +596,6 @@ function startChestOpen(): void {
   if (chestPhase !== 'idle') return;
   if (opts.state.coins < CHEST_COST) return; // button is dimmed; ignore taps
   chestPhase = 'rattle'; chestT = 0; chestCube = null; chestParts = [];
-  sfx.chestRattle();
 }
 
 function stepChest(dt: number): void {
@@ -599,12 +605,8 @@ function stepChest(dt: number): void {
     const r = opts.onChest();              // commit the open at the burst moment
     if (!r.ok) { chestPhase = 'idle'; toastText = 'Недостатньо монет'; toastTimer = TOAST_DUR; toastAlpha = 1; return; }
     chestCube = r.cube ?? null;
+    chestNew = r.isNew === true;
     chestPhase = 'burst'; chestT = 0;
-    sfx.chestOpen();
-    if (chestCube) {
-      const rar = CUBES[chestCube]?.rarity ?? 'common';
-      if (rar === 'epic' || rar === 'legendary' || rar === 'rare') sfx.rare();
-    }
     const c = chestCenter();
     const col = chestCube ? colorOfType(chestCube) : '#ffe070';
     chestParts = [];
@@ -703,6 +705,11 @@ function drawChest(): void {
       ctx.strokeRect(-26, -26, 52, 52);
       ctx.restore();
       // labels
+      if (chestNew) {
+        ctx.fillStyle = '#7fe0a0';
+        ctx.font = 'bold 14px "Segoe UI",system-ui,sans-serif';
+        ctx.fillText('✦ НОВИЙ ТИП ✦', c.x, c.y - 56);
+      }
       ctx.fillStyle = rcol;
       ctx.font = 'bold 13px "Segoe UI",system-ui,sans-serif';
       ctx.fillText((RARITY_UA[rar] ?? '').toUpperCase(), c.x, c.y + 52);

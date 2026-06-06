@@ -168,5 +168,21 @@ export function stageReward(
   return { xp, coins, cube };
 }
 
+// ---------------------------------------------------------------------------
+// Stuck-stage hint (§C) — archetype-derived advice after repeated losses.
+// ---------------------------------------------------------------------------
+const STUCK_HINT_UA: Record<Archetype, string> = {
+  melee:  'ворог бʼє зблизька — додай Тіло (зелені) та Броню',
+  ranged: 'ворог стріляє — додай Тіло (зелені) або Спритність',
+  mage:   'ворог маг — додай Тіло та Оберіг (магічний опір)',
+  tank:   'ворог броньований — додай Силу/Пробій (червоні)',
+};
+
+/** Concrete advice for a stage the player keeps losing, from the enemy archetype. */
+export function stuckHint(level: number, stage: number): string {
+  const archetype = ARCHETYPES[(level + stage) % 4] as Archetype;
+  return STUCK_HINT_UA[archetype];
+}
+
 // Re-export CUBES so tests can reference it if needed (noop, already from index)
 export { CUBES };

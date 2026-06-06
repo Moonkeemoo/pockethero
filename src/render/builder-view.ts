@@ -11,7 +11,6 @@ import { xpToNext, grantLootInto, save as saveMeta } from '../game/meta';
 import { detectTraits } from '../derive/detectors';
 import { SYNERGY_DEFS } from '../data/traits';
 import { MOVES, MOVE_IDS } from '../data/moves';
-import { sfx } from './sfx';
 
 // ---------------------------------------------------------------------------
 // 0. TUNABLE CONSTANTS (verbatim from poc lines 80-141)
@@ -2280,7 +2279,6 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
       coachDone = true;
       opts.state.onboarded = true;
       saveMeta(opts.state);
-      sfx.spike();
       toast('Техніку відкрито: «Шип» ⚔ — досяжність + атака!', '#ffd24a');
     }
 
@@ -2311,6 +2309,7 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
       else if (ev.kind === 'xp') parts.push('+' + ev.n + ' XP');
       else if (ev.kind === 'essence') parts.push('+' + ev.n + ' Essence');
       else if (ev.kind === 'loot') parts.push('Лут: ' + ev.cubes.map(k => CUBES[k]?.name ?? k).join(', '));
+      else if (ev.kind === 'newType') parts.push('Новий тип: ' + (CUBES[ev.cube]?.name ?? ev.cube));
     }
     if (parts.length > 0) toast(parts.join(' · '), '#b07ed0');
   }

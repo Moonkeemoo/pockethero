@@ -27,6 +27,11 @@ export interface SaveState {
   campaign: { level: number; stage: number };
   /** First-session builder coach seen? Optional so older saves/test literals omit it. */
   onboarded?: boolean;
+  /** Cube types the player has ever obtained (for the one-time "Новий тип" callout). */
+  seenTypes?: string[];
+  /** Consecutive losses on the same stage — drives the stuck-stage hint (§C). */
+  lossStreak?: number;
+  lossStage?: { level: number; stage: number };
 }
 
 export interface FightResult {
@@ -41,7 +46,22 @@ export type RewardEvent =
   | { kind: 'loot'; cubes: string[] }
   | { kind: 'coins'; n: number }
   | { kind: 'cube'; cube: string }
+  | { kind: 'newType'; cube: string }
   | { kind: 'info'; text: string };
+
+/**
+ * Record cube types as "seen". Pushes a `newType` event for each first-ever type
+ * so the UI can fire a one-time "Новий тип" callout. Mutates state.seenTypes.
+ */
+export function noteSeen(state: SaveState, types: string[], events: RewardEvent[]): void {
+  if (!state.seenTypes) state.seenTypes = [];
+  for (const ty of types) {
+    if (!state.seenTypes.includes(ty)) {
+      state.seenTypes.push(ty);
+      events.push({ kind: 'newType', cube: ty });
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Reward constants (tunable)
@@ -151,6 +171,13 @@ export function defaultState(): SaveState {
     coins: 0,
     campaign: { level: 1, stage: 0 },
     onboarded: false,
+    // Starter cubes count as already-seen so the first earned cube of a NEW type
+    // is the one that triggers the "Новий тип" callout.
+    seenTypes: [...new Set([
+      ...Object.keys(inventory).filter(k => (inventory[k] ?? 0) > 0),
+      ...heroBuild.map(p => p.type),
+    ])],
+    lossStreak: 0,
   };
 }
 
@@ -180,6 +207,7 @@ function applyXpAndLevelUp(
     events.push({ kind: 'levelUp', level: state.level });
     if (granted.length > 0) {
       events.push({ kind: 'loot', cubes: granted });
+      noteSeen(state, granted, events);
     }
   }
 }
@@ -224,6 +252,7 @@ export function addKillReward(
   if (r.cube !== undefined) {
     state.inventory[r.cube] = (state.inventory[r.cube] ?? 0) + 1;
     events.push({ kind: 'cube', cube: r.cube });
+    noteSeen(state, [r.cube], events);
   }
 
   // XP + level-up loop (reuses shared helper)
@@ -249,6 +278,7 @@ export function openChest(
   const effectiveRng = rng ?? mulberry32(state.level * 9999 + state.coins);
   const granted = grantLootInto(state.inventory, 1, effectiveRng);
   const events: RewardEvent[] = [{ kind: 'loot', cubes: granted }];
+  noteSeen(state, granted, events);
 
   return { ok: true, cubes: granted, events };
 }
@@ -308,6 +338,16 @@ export function load(storage?: StorageLike): SaveState {
                 ? { level: (parsed.campaign as { level: number; stage: number }).level, stage: (parsed.campaign as { level: number; stage: number }).stage }
                 : { level: 1, stage: 0 },
             onboarded: parsed.onboarded === true,
+            // Seed from currently-owned cubes if the save predates seenTypes, so
+            // existing cubes don't all spuriously read as "new".
+            seenTypes: Array.isArray(parsed.seenTypes)
+              ? parsed.seenTypes
+              : [...new Set([
+                  ...Object.keys(parsed.inventory).filter(k => (parsed.inventory![k] ?? 0) > 0),
+                  ...parsed.heroBuild.map(p => p.type),
+                ])],
+            lossStreak: typeof parsed.lossStreak === 'number' ? parsed.lossStreak : 0,
+            lossStage: parsed.lossStage,
           };
         }
       }
