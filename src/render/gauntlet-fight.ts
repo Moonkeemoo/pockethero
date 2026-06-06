@@ -13,6 +13,8 @@ import type { SaveState, RewardEvent } from '../game/meta';
 import { winStage, completeLevel, loseRun, buyCube, accountStatBonus, noteSeen, save } from '../game/meta';
 import { genEnemy, stageCount, stageTier, stageReward, rollShop, cubePrice, stuckHint } from '../game/campaign';
 import { detectTraits } from '../derive/detectors';
+import { SpriteAnimator } from './sprite';
+import { heroSprite, enemySprite } from './sprite-manifest';
 
 /* ============================================================================
    TYPES
@@ -54,6 +56,7 @@ interface Fighter {
   advance: number; knock: number; knockV: number;
   hpShown: number; hpChip: number; chipDelay: number;
   flash: number; charge: number; chargeSchool: string | null; squash: number; alive: boolean;
+  anim?: SpriteAnimator;   // billboard sprite (PixelLab); falls back to cubes if absent/unloaded
 }
 interface Actor { f: Fighter; tgt: Fighter; move: MoveDef; t: number; stage: 'windup' | 'release' | 'recover'; fired: boolean }
 interface Projectile {
@@ -261,6 +264,7 @@ export function startCampaignBattle(opts: {
     const tgt = (f === hero2) ? enemy2 : hero2;
     const move = pickMove2(f);
     actors2.push({ f, tgt, move, t: 0, stage: 'windup', fired: false });
+    f.anim?.play('attack', true);   // play the sprite attack one-shot, back to idle
     f.squash = (move.school === 'magic' || move.kind === 'sword') ? 1 : 0.5;
     if (move.school === 'magic') { f.charge = 0.0001; f.chargeSchool = move.magicSchool ?? null; }
     emit2({ kind: 'telegraph', source: f, move });
@@ -806,11 +810,18 @@ export function startCampaignBattle(opts: {
     }
   }
 
+  const SPRITE_BASE2 = 0.85; // 240px PixelLab frame → ~200px on-screen at scale 1
   function drawCreature2(f: Fighter): void {
     if (!f.alive) return;
     const sx = creatureScreenX2(f);
     const lift2 = (1 - depthScale2(f)) * 120;
     const baseY = ground2 - lift2;
+    // PixelLab sprite (with squash + hit-flash); fall back to procedural cubes.
+    if (f.anim && f.anim.loaded()) {
+      const scale = f.scale * SPRITE_BASE2;
+      const sqX = 1 - f.squash * 0.10, sqY = 1 + f.squash * 0.12;
+      if (f.anim.draw(ctx2, sx, baseY, scale, f.face, sqX, sqY, f.flash)) return;
+    }
     drawCreaturePixels2(f, sx, baseY, 1, (f.face > 0 ? 1.5 : 0));
   }
 
@@ -1497,6 +1508,9 @@ export function startCampaignBattle(opts: {
     };
     hero2 = makeFighter2(heroEntry);
     enemy2 = makeFighter2(enemyEntry);
+    // PixelLab billboard sprites (fall back to procedural cubes until loaded).
+    hero2.anim = new SpriteAnimator(heroSprite());
+    enemy2.anim = new SpriteAnimator(enemySprite(spec.name, spec.boss));
     // D3 — permanent account HP bonus folded onto the hero.
     const hpAdd = accountStatBonus(state).maxHpAdd;
     if (hpAdd > 0) { hero2.maxHP += hpAdd; hero2.hp = hero2.maxHP; hero2.hpShown = hero2.maxHP; }
@@ -1946,6 +1960,7 @@ export function startCampaignBattle(opts: {
     // Always tick delayed2c so auto-exit fires even during result phase
     stepDelayed2c(rawDt);
     stepRewardOverlay2(rawDt);
+    for (const f of fighters2) f.anim?.step(rawDt);
     if (shopNoteT > 0) shopNoteT -= rawDt;
 
     if (phase2 === 'card') {

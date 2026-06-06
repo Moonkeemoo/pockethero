@@ -5,3 +5,6 @@ dist/
 # transient headless-render screenshots
 _*.png
 _*.log
+
+# PixelLab API key — never commit
+.pixellab.key
