@@ -12,6 +12,7 @@ import type { Build } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
 import { winStage, completeLevel, loseRun, buyCube, accountStatBonus, noteSeen, save } from '../game/meta';
 import { genEnemy, stageCount, stageTier, stageReward, rollShop, cubePrice, stuckHint } from '../game/campaign';
+import { detectTraits } from '../derive/detectors';
 
 /* ============================================================================
    TYPES
@@ -187,11 +188,16 @@ export function startCampaignBattle(opts: {
   document.body.style.cssText = 'margin:0;height:100%;background:#070a0f;overflow:hidden;font-family:"Segoe UI",system-ui,sans-serif;color:#cfd6e0';
   document.body.appendChild(cv2);
   const ctx2 = cv2.getContext('2d')!;
-  let W2 = 0, H2 = 0, ground2 = 0;
+  // The canvas is full height (fullH2); the BATTLE renders into a top region of
+  // height H2 (= BATTLE_FRAC·fullH2) so the hero grid + shop live below it. The
+  // battle slides up out of its region as the shop opens (shopAnim 0→1).
+  const BATTLE_FRAC = 0.58;
+  let W2 = 0, H2 = 0, fullH2 = 0, ground2 = 0;
   function resize2(): void {
-    W2 = innerWidth; H2 = innerHeight;
-    cv2.width = W2; cv2.height = H2;
-    cv2.style.width = W2 + 'px'; cv2.style.height = H2 + 'px';
+    W2 = innerWidth; fullH2 = innerHeight;
+    cv2.width = W2; cv2.height = fullH2;
+    cv2.style.width = W2 + 'px'; cv2.style.height = fullH2 + 'px';
+    H2 = Math.round(fullH2 * BATTLE_FRAC);
     ground2 = H2 * 0.70;
   }
   window.addEventListener('resize', resize2); resize2();
@@ -1027,8 +1033,9 @@ export function startCampaignBattle(opts: {
   let nodeTickT2 = 0;       // green ✓ tick-pop clock on the just-cleared node
   const levelUpPops2: Array<{ level: number; t: number; delay: number }> = []; // §D.3
 
-  function coinPillPos2(): { x: number; y: number } { return { x: W2 - 16, y: 88 }; }
-  function cubePillPos2(): { x: number; y: number } { return { x: W2 - 16, y: 110 }; }
+  // Coins fly to the wallet HUD (top-right); no separate run-tally pill.
+  function coinPillPos2(): { x: number; y: number } { return { x: W2 - 30, y: 20 }; }
+  function cubePillPos2(): { x: number; y: number } { return { x: W2 - 30, y: 20 }; }
 
   function spawnRewardSpray2(reward: { xp: number; coins: number; cube?: string }): void {
     winPopT2 = 0.0001;
@@ -1082,28 +1089,7 @@ export function startCampaignBattle(opts: {
   }
 
   function drawRewardOverlay2(): void {
-    // Run-tally pills (top-right), with landing scale-bump
-    if (runCoins2 > 0 || rewardTokens2.some(t => t.kind === 'coin')) {
-      const cp = coinPillPos2();
-      const cb = 1 + (coinPillBump2 > 0 ? 0.24 * (coinPillBump2 / 0.28) : 0);
-      ctx2.save();
-      ctx2.translate(cp.x, cp.y); ctx2.scale(cb, cb);
-      ctx2.font = 'bold 14px system-ui'; ctx2.textAlign = 'right'; ctx2.textBaseline = 'middle';
-      ctx2.fillStyle = '#ffe070';
-      ctx2.fillText(`⬡ ${Math.round(runCoins2)}`, 0, 0);
-      ctx2.restore();
-    }
-    if (runCubes2 > 0 || rewardTokens2.some(t => t.kind === 'cube')) {
-      const bp = cubePillPos2();
-      const bb = 1 + (cubePillBump2 > 0 ? 0.24 * (cubePillBump2 / 0.32) : 0);
-      ctx2.save();
-      ctx2.translate(bp.x, bp.y); ctx2.scale(bb, bb);
-      ctx2.font = 'bold 13px system-ui'; ctx2.textAlign = 'right'; ctx2.textBaseline = 'middle';
-      ctx2.fillStyle = '#bfe0ff';
-      ctx2.fillText(`◼ ${runCubes2}`, 0, 0);
-      ctx2.restore();
-    }
-    // Flying tokens
+    // Flying tokens (coins fly into the wallet HUD; no separate run-tally pill)
     for (const tk of rewardTokens2) {
       if (tk.t < 0) continue;
       ctx2.save();
@@ -1624,6 +1610,14 @@ export function startCampaignBattle(opts: {
   let shopSelected = -1;     // index of the offer being placed (-1 = none)
   let shopNote = '';         // transient hint
   let shopNoteT = 0;
+  let shopAnim = 0;          // 0 = fight layout, 1 = shop layout (battle slid up)
+
+  // Bond/combo colours for the grid synergy + shape visualisation.
+  const TRAIT_COL2: Record<string, string> = {
+    blade: '#E0483F', outpost: '#7C8AA0', kindle: '#ff7a2a', flow: '#5ad6ff',
+    amplify: '#c060ff', venomweave: '#7bd64a',
+    spike: '#ff5a3f', bastion: '#8fa6d6', heart: '#46d68c', balance: '#EAEFF5',
+  };
 
   function enterShop2(): void {
     phase2 = 'shop';
@@ -1635,9 +1629,14 @@ export function startCampaignBattle(opts: {
   }
 
   // --- hero-grid geometry (top-down build view, distinct from the billboard) ---
+  // Lerps between the fight layout (compact, in the band below the battle) and
+  // the shop layout (large, risen to the upper area) by shopAnim.
   function gridGeom2(): { cx: number; cy: number; cell: number } {
-    if (phase2 === 'shop') return { cx: W2 / 2, cy: H2 * 0.40, cell: 26 };
-    return { cx: 60, cy: H2 - 64, cell: 13 };   // compact read-only panel during fight
+    const cyFight = H2 + (fullH2 - H2) * 0.42;
+    const cyShop  = fullH2 * 0.30;
+    const cy = cyFight + (cyShop - cyFight) * shopAnim;
+    const cell = 15 + (29 - 15) * shopAnim;
+    return { cx: W2 / 2, cy, cell };
   }
   function gridToScreenRun2(gx: number, gy: number): { x: number; y: number } {
     const g = gridGeom2(); return { x: g.cx + gx * g.cell, y: g.cy + gy * g.cell };
@@ -1654,10 +1653,39 @@ export function startCampaignBattle(opts: {
 
   function drawHeroGrid2(): void {
     const g = gridGeom2();
-    if (phase2 === 'shop' && shopSelected >= 0) {
-      // placeable-cell hints (empty cells orthogonally adjacent to the body)
+    const traits = detectTraits(state.run.build);
+    const build = state.run.build;
+
+    // 1) Adjacency synergy bonds — coloured lines between paired cubes.
+    for (const tr of traits) {
+      if (tr.kind !== 'adjacency' || !tr.bonds) continue;
+      const col = TRAIT_COL2[tr.key] ?? '#9fd0ff';
+      ctx2.strokeStyle = col; ctx2.lineWidth = Math.max(2, g.cell * 0.13);
+      ctx2.globalAlpha = 0.85; ctx2.lineCap = 'round';
+      for (const [i, j] of tr.bonds) {
+        const a = build[i], b = build[j]; if (!a || !b) continue;
+        const sa = gridToScreenRun2(a.gx, a.gy), sb = gridToScreenRun2(b.gx, b.gy);
+        ctx2.beginPath(); ctx2.moveTo(sa.x, sa.y); ctx2.lineTo(sb.x, sb.y); ctx2.stroke();
+      }
+      ctx2.globalAlpha = 1; ctx2.lineCap = 'butt';
+    }
+    // 2) Shape recipes — pulsing outline around each matched set.
+    for (const tr of traits) {
+      if (tr.kind !== 'shape' || !tr.sets) continue;
+      const col = TRAIT_COL2[tr.key] ?? '#ffd24a';
+      ctx2.strokeStyle = col; ctx2.lineWidth = 2;
+      ctx2.globalAlpha = 0.45 + 0.35 * (0.5 + 0.5 * Math.sin(t2 * 4));
+      for (const set of tr.sets) for (const idx of set) {
+        const p = build[idx]; if (!p) continue;
+        const s = gridToScreenRun2(p.gx, p.gy);
+        ctx2.strokeRect(s.x - g.cell / 2 - 2, s.y - g.cell / 2 - 2, g.cell + 4, g.cell + 4);
+      }
+      ctx2.globalAlpha = 1;
+    }
+    // 3) Placeable-cell hints (shop, while an offer is selected).
+    if (phase2 === 'shop' && shopSelected >= 0 && shopAnim > 0.6) {
       const seen = new Set<string>();
-      for (const p of state.run.build) {
+      for (const p of build) {
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
           const gx = p.gx + dx, gy = p.gy + dy, k = gx + ',' + gy;
           if (seen.has(k) || cellOccupiedRun2(gx, gy)) continue; seen.add(k);
@@ -1669,14 +1697,66 @@ export function startCampaignBattle(opts: {
         }
       }
     }
-    for (const p of state.run.build) {
+    // 4) The cubes (on top of bonds/glows).
+    for (const p of build) {
       const s = gridToScreenRun2(p.gx, p.gy);
       const w = g.cell - 2;
       ctx2.fillStyle = CUBES[p.type]?.col ?? '#888';
       ctx2.fillRect(s.x - w / 2, s.y - w / 2, w, w);
-      ctx2.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx2.fillStyle = 'rgba(255,255,255,0.16)';
       ctx2.fillRect(s.x - w / 2, s.y - w / 2, w, Math.max(1, w * 0.22));
     }
+  }
+
+  // Active synergy/shape combos as a readout (chips during fight, list in shop).
+  function drawTraitsReadout2(): void {
+    const traits = detectTraits(state.run.build);
+    if (!traits.length) return;
+    const g = gridGeom2();
+    const full = shopAnim > 0.5;
+    ctx2.textBaseline = 'middle';
+    if (full) {
+      // Shop: vertical list "● name — effect" below the grid.
+      let y = g.cy + g.cell * 3.2 + 8;
+      ctx2.textAlign = 'left';
+      const x = W2 / 2 - Math.min(W2 * 0.42, 230);
+      for (const tr of traits) {
+        const col = TRAIT_COL2[tr.key] ?? '#9fd0ff';
+        ctx2.fillStyle = col; ctx2.beginPath(); ctx2.arc(x, y, 4, 0, Math.PI * 2); ctx2.fill();
+        ctx2.font = 'bold 13px system-ui'; ctx2.fillStyle = '#e6edf6';
+        const tag = tr.magnitude > 1 ? ` ×${tr.magnitude}` : '';
+        ctx2.fillText(`${tr.name}${tag}`, x + 12, y);
+        ctx2.font = '12px system-ui'; ctx2.fillStyle = '#90a4c0';
+        ctx2.fillText(tr.effect, x + 12 + ctx2.measureText(`${tr.name}${tag}`).width + 10, y);
+        y += 20;
+      }
+    } else {
+      // Fight: a compact centred chip row just above the grid.
+      const labels = traits.map(tr => ({ name: tr.name, col: TRAIT_COL2[tr.key] ?? '#9fd0ff' }));
+      ctx2.font = 'bold 11px system-ui'; ctx2.textAlign = 'left';
+      const widths = labels.map(l => ctx2.measureText(l.name).width + 22);
+      const totalW = widths.reduce((a, b) => a + b + 6, -6);
+      let x = W2 / 2 - totalW / 2;
+      const y = g.cy - g.cell * 2.4;
+      ctx2.globalAlpha = 1 - shopAnim;
+      for (let i = 0; i < labels.length; i++) {
+        const w = widths[i]!;
+        ctx2.fillStyle = 'rgba(10,16,28,0.8)';
+        ctx2.beginPath(); ctx2.roundRect(x, y - 9, w, 18, 9); ctx2.fill();
+        ctx2.fillStyle = labels[i]!.col; ctx2.beginPath(); ctx2.arc(x + 9, y, 3.5, 0, Math.PI * 2); ctx2.fill();
+        ctx2.fillStyle = '#dfe7f4'; ctx2.fillText(labels[i]!.name, x + 16, y);
+        x += w + 6;
+      }
+      ctx2.globalAlpha = 1;
+    }
+    ctx2.textAlign = 'left'; ctx2.textBaseline = 'alphabetic';
+  }
+
+  // Full-canvas dark background (shows in the grid/shop region below the battle).
+  function drawFullBg2(): void {
+    const grd = ctx2.createLinearGradient(0, 0, 0, fullH2);
+    grd.addColorStop(0, '#0e1420'); grd.addColorStop(0.6, '#0b101a'); grd.addColorStop(1, '#070a11');
+    ctx2.fillStyle = grd; ctx2.fillRect(0, 0, W2, fullH2);
   }
 
   function drawWalletHUD2(): void {
@@ -1686,29 +1766,32 @@ export function startCampaignBattle(opts: {
     ctx2.textAlign = 'left';
   }
 
+  // Offers + fight button slide up from the bottom as the shop opens (shopAnim).
+  function shopSlideY2(finalY: number): number {
+    return (fullH2 + 30) + (finalY - (fullH2 + 30)) * shopAnim;
+  }
   function shopCardRect2(i: number): { x: number; y: number; w: number; h: number } {
     const n = 3, gap = 12, cw = Math.min(150, (W2 - gap * (n + 1)) / n), ch = 92;
     const totalW = n * cw + (n - 1) * gap;
-    return { x: W2 / 2 - totalW / 2 + i * (cw + gap), y: H2 - ch - 58, w: cw, h: ch };
+    return { x: W2 / 2 - totalW / 2 + i * (cw + gap), y: shopSlideY2(fullH2 - ch - 64), w: cw, h: ch };
   }
   function shopFightBtnRect2(): { x: number; y: number; w: number; h: number } {
-    const w = Math.min(220, W2 * 0.6), h = 42; return { x: W2 / 2 - w / 2, y: H2 - 48, w, h };
+    const w = Math.min(220, W2 * 0.6), h = 42; return { x: W2 / 2 - w / 2, y: shopSlideY2(fullH2 - 50), w, h };
   }
   function shopLobbyBtnRect2(): { x: number; y: number; w: number; h: number } {
     return { x: 12, y: 12, w: 96, h: 30 };
   }
 
   function drawShop2(): void {
-    if (phase2 !== 'shop') return;
-    ctx2.fillStyle = 'rgba(6,9,15,0.58)'; ctx2.fillRect(0, 0, W2, H2);
+    // Header (fades in with the slide)
+    ctx2.globalAlpha = shopAnim;
     ctx2.textAlign = 'center'; ctx2.textBaseline = 'alphabetic';
     ctx2.font = 'bold 18px system-ui'; ctx2.fillStyle = '#cfe0ff';
-    ctx2.fillText(`Магазин · далі Етап ${state.run.stage + 1}/${totalStages}`, W2 / 2, H2 * 0.12);
+    ctx2.fillText(`Магазин · далі Етап ${state.run.stage + 1}/${totalStages}`, W2 / 2, 30);
     ctx2.font = '12px system-ui'; ctx2.fillStyle = '#90a4c0';
-    ctx2.fillText(shopSelected >= 0 ? 'Тапни клітинку поряд із тілом, щоб поставити' : 'Купи куб і добудуй духа', W2 / 2, H2 * 0.12 + 20);
-    if (shopNoteT > 0) { ctx2.globalAlpha = Math.min(1, shopNoteT * 2); ctx2.fillStyle = '#ffb070'; ctx2.font = 'bold 14px system-ui'; ctx2.fillText(shopNote, W2 / 2, H2 * 0.12 + 42); ctx2.globalAlpha = 1; }
-
-    drawHeroGrid2();
+    ctx2.fillText(shopSelected >= 0 ? 'Тапни клітинку поряд із тілом, щоб поставити' : 'Купи куб і добудуй духа', W2 / 2, 50);
+    if (shopNoteT > 0) { ctx2.fillStyle = '#ffb070'; ctx2.font = 'bold 14px system-ui'; ctx2.fillText(shopNote, W2 / 2, 70); }
+    ctx2.globalAlpha = 1;
 
     for (let i = 0; i < shopOffers.length; i++) {
       const o = shopOffers[i]!; const r = shopCardRect2(i);
@@ -1743,7 +1826,6 @@ export function startCampaignBattle(opts: {
     ctx2.fillText('В БІЙ →', fb.x + fb.w / 2, fb.y + fb.h / 2);
     ctx2.textBaseline = 'alphabetic';
 
-    drawWalletHUD2();
     const lb = shopLobbyBtnRect2();
     ctx2.fillStyle = 'rgba(20,28,44,0.8)'; ctx2.beginPath(); ctx2.roundRect(lb.x, lb.y, lb.w, lb.h, 7); ctx2.fill();
     ctx2.fillStyle = '#9fb0c8'; ctx2.font = 'bold 12px system-ui'; ctx2.textBaseline = 'middle';
@@ -1753,6 +1835,7 @@ export function startCampaignBattle(opts: {
 
   function handleShopTap2(cx: number, cy: number): boolean {
     if (phase2 !== 'shop') return false;
+    if (shopAnim < 0.9) return true;   // swallow taps until the shop has settled in
     if (inRect2(cx, cy, shopLobbyBtnRect2())) { exitToLobby2(); return true; }
     if (inRect2(cx, cy, shopFightBtnRect2())) { startCard2(); return true; }
     for (let i = 0; i < shopOffers.length; i++) {
@@ -1878,58 +1961,64 @@ export function startCampaignBattle(opts: {
         handleStageEnd();
       }
     } else if (phase2 === 'shop') {
-      simDt = 0; // freeze the battle behind the shop
+      simDt = 0; // freeze the battle as it slides away
     }
 
     physStep2((phase2 === 'fight' && hitstop2 > 0) ? 0 : simDt);
 
-    ctx2.setTransform(1, 0, 0, 1, 0, 0);
-    ctx2.clearRect(0, 0, W2, H2);
+    // Animate the shop slide (0 = fight layout, 1 = shop layout).
+    const shopTarget = phase2 === 'shop' ? 1 : 0;
+    shopAnim += (shopTarget - shopAnim) * Math.min(1, rawDt * 9);
+    if (Math.abs(shopAnim - shopTarget) < 0.004) shopAnim = shopTarget;
 
+    ctx2.setTransform(1, 0, 0, 1, 0, 0);
+    ctx2.clearRect(0, 0, W2, fullH2);
+    drawFullBg2();
+
+    // ---- BATTLE region: clipped to the top H2, slides up as the shop opens ----
     const shx = (rnd2() - .5) * shake2, shy = (rnd2() - .5) * shake2;
     camX2 = shx; camY2 = shy;
+    ctx2.save();
+    ctx2.beginPath(); ctx2.rect(0, 0, W2, H2); ctx2.clip();
+    ctx2.translate(0, -shopAnim * (H2 + 30));
     drawArena2();
-
     if (phase2 === 'card') {
       drawStageBanner2();
       drawHUD2();
       drawStageProgressBar2();
-      drawRewardOverlay2();
-      rafId2 = requestAnimationFrame(frame2);
-      return;
+    } else {
+      ctx2.save();
+      ctx2.translate(W2 / 2 + shx, H2 / 2 + shy);
+      ctx2.scale(zoom2, zoom2);
+      ctx2.translate(-W2 / 2, -H2 / 2);
+      for (const f of fighters2) drawShadow2(f);
+      const order2 = [...fighters2].sort((a, b) => depthScale2(a) - depthScale2(b));
+      for (const f of order2) drawCreature2(f);
+      drawProjectiles2();
+      drawBolts2();
+      drawSlashFX2(rawDt);
+      drawParticles2();
+      ctx2.restore();
+      drawVignetteAndLight2();
+      for (const f of fighters2) { if (f.alive) drawHPBar2(f); }
+      drawATB2();
+      drawFloaters2();
+      drawLog2();
+      drawHUD2();
+      drawStageProgressBar2();
+      if (phase2 === 'result') drawResultBanner2();
     }
+    ctx2.restore(); // end battle region
 
-    ctx2.save();
-    ctx2.translate(W2 / 2 + shx, H2 / 2 + shy);
-    ctx2.scale(zoom2, zoom2);
-    ctx2.translate(-W2 / 2, -H2 / 2);
-
-    for (const f of fighters2) drawShadow2(f);
-    const order2 = [...fighters2].sort((a, b) => depthScale2(a) - depthScale2(b));
-    for (const f of order2) drawCreature2(f);
-    drawProjectiles2();
-    drawBolts2();
-    drawSlashFX2(rawDt);
-    drawParticles2();
-    ctx2.restore();
-
-    drawVignetteAndLight2();
-    for (const f of fighters2) { if (f.alive) drawHPBar2(f); }
-    drawATB2();
-    drawFloaters2();
-    drawLog2();
-    drawHUD2();
-    drawStageProgressBar2();
-    if (phase2 === 'result') drawResultBanner2();
     drawRewardOverlay2();
 
-    // Hero grid (read-only compact during fight) + shop overlay between stages.
-    if (phase2 === 'shop') {
-      drawShop2();
-    } else {
-      drawHeroGrid2();
-      drawWalletHUD2();
-    }
+    // ---- Hero grid + synergy/shape bonds (always) + combo readout ----
+    drawHeroGrid2();
+    drawTraitsReadout2();
+    drawWalletHUD2();
+
+    // ---- Shop offers (slide up from the bottom) ----
+    if (shopAnim > 0.01) drawShop2();
 
     rafId2 = requestAnimationFrame(frame2);
   }
