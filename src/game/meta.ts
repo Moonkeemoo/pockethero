@@ -1,6 +1,11 @@
 /**
  * src/game/meta.ts — single source of truth for progression + persistence.
  * Pure logic + thin storage adapter. NO Pixi/DOM imports. No top-level side effects.
+ *
+ * Roguelite shop rework (SAVE_VERSION 5):
+ *  - coins = permanent wallet (never burned on loss)
+ *  - accountLevel / accountXp = meta progression → permanent HP bonus
+ *  - run = the in-progress campaign attempt (level/stage/build), resets on loss/level-up
  */
 
 import type { Build } from '../index';
@@ -18,32 +23,28 @@ export interface StorageLike {
 // Types
 // ---------------------------------------------------------------------------
 export interface SaveState {
-  level: number;
-  xp: number;
-  essence: number;
-  inventory: Record<string, number>;
-  heroBuild: Build;
+  /** D1 — permanent wallet; never burned on loss. */
   coins: number;
-  campaign: { level: number; stage: number };
-  /** First-session builder coach seen? Optional so older saves/test literals omit it. */
-  onboarded?: boolean;
+  /** D3 — meta progression level (was `level`). */
+  accountLevel: number;
+  /** D3 — meta XP (was `xp`). */
+  accountXp: number;
+  /** The in-progress campaign attempt. */
+  run: {
+    level: number;   // campaign chapter (1+)
+    stage: number;   // 0-based stage within the level
+    build: Build;    // current hero; resets to [{gx:0,gy:0,type:'core'}]
+  };
   /** Cube types the player has ever obtained (for the one-time "Новий тип" callout). */
   seenTypes?: string[];
-  /** Consecutive losses on the same stage — drives the stuck-stage hint (§C). */
+  /** Consecutive losses on the same {level,stage} — drives the stuck-stage hint (§C). */
   lossStreak?: number;
   lossStage?: { level: number; stage: number };
 }
 
-export interface FightResult {
-  won: boolean;
-  stagesCleared: number;
-}
-
 export type RewardEvent =
-  | { kind: 'essence'; n: number }
   | { kind: 'xp'; n: number }
   | { kind: 'levelUp'; level: number }
-  | { kind: 'loot'; cubes: string[] }
   | { kind: 'coins'; n: number }
   | { kind: 'cube'; cube: string }
   | { kind: 'newType'; cube: string }
@@ -64,22 +65,24 @@ export function noteSeen(state: SaveState, types: string[], events: RewardEvent[
 }
 
 // ---------------------------------------------------------------------------
-// Reward constants (tunable)
+// Progression constants (tunable)
 // ---------------------------------------------------------------------------
-export const CHEST_COST = 50;
-export const ESSENCE_PER_FIGHT = 5;
-export const XP_PER_STAGE      = 20;
-export const XP_WIN_BONUS      = 30;
-export const XP_LOSS           = 10;
+/** Permanent max-HP granted to the hero per account level beyond 1 (D3). */
+export const ACCOUNT_HP_PER_LEVEL = 3;
 
-export function xpToNext(level: number): number {
+/** Account XP required to advance from `level` to `level+1`. */
+export function accountXpToNext(level: number): number {
   return 50 + level * 25;
 }
 
+/** Permanent stat bonus from account progression, applied to the hero fighter. */
+export function accountStatBonus(state: SaveState): { maxHpAdd: number } {
+  return { maxHpAdd: ACCOUNT_HP_PER_LEVEL * (state.accountLevel - 1) };
+}
+
 // ---------------------------------------------------------------------------
-// Shared loot data — must mirror builder-view.ts constants exactly
+// Shared rarity-weighted cube roll (reused by campaign's shop roll)
 // ---------------------------------------------------------------------------
-const SEED_BASE = 1337;
 const RARITY_WEIGHT: Record<string, number> = { common: 60, rare: 26, epic: 11, legendary: 3 };
 const TYPE_ORDER = [
   'core',
@@ -91,18 +94,9 @@ const TYPE_ORDER = [
 ];
 const PLACEABLE = TYPE_ORDER.filter(k => k !== 'core');
 
-function mulberry32(a: number): () => number {
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 /**
- * Pick a random weighted cube type (shared by builder-view and meta).
- * Uses the same RARITY_WEIGHT table and PLACEABLE list.
+ * Pick a random weighted cube type from the placeable pool (excludes 'core').
+ * Uses RARITY_WEIGHT to choose a rarity bucket, then a uniform pick within it.
  */
 export function weightedCubePick(r: () => number): string {
   let total = 0;
@@ -116,8 +110,9 @@ export function weightedCubePick(r: () => number): string {
 }
 
 /**
- * Grant loot items into an inventory (n random cubes).
- * Returns the list of cube keys granted (for RewardEvent).
+ * Grant n random weighted cubes into an inventory map.
+ * Returns the list of cube keys granted. Kept for callers that still bucket
+ * loot into a Record (the shop rolls via campaign.rollShop, not this).
  */
 export function grantLootInto(
   inventory: Record<string, number>,
@@ -133,154 +128,97 @@ export function grantLootInto(
   return granted;
 }
 
-// Loot counter — used internally to seed loot rng uniquely per grant call.
-// We store this as part of the computation, not in SaveState (pure function approach).
-// Increment by passing a counter; we derive a counter from state.level + call count.
-function makeLootRng(seed: number): () => number {
-  return mulberry32(SEED_BASE * 7 + seed * 2654435761);
+// ---------------------------------------------------------------------------
+// Run build helpers
+// ---------------------------------------------------------------------------
+function starterBuild(): Build {
+  return [{ gx: 0, gy: 0, type: 'core' }];
 }
 
-// ---------------------------------------------------------------------------
-// Starter inventory (same 16 cubes the builder grants today: grantLoot([8,8]) twice)
-// ---------------------------------------------------------------------------
 export function defaultState(): SaveState {
-  const inventory: Record<string, number> = {};
-  for (const k of PLACEABLE) inventory[k] = 0;
-
-  // Simulate the builder's initial loot: grantLoot([8,8]) twice = 16 cubes total
-  // Builder calls grantLoot(LOOT_BATCH) with lootClicks++ (starts at 0, increments to 1, then 2)
-  const r1 = makeLootRng(1);  // lootClicks = 1 after first call
-  grantLootInto(inventory, 8, r1);
-  const r2 = makeLootRng(2);  // lootClicks = 2 after second call
-  grantLootInto(inventory, 8, r2);
-
-  // Starter hero: TINY (grow from 1-2 cubes) — a core + one force, so it has a
-  // small attack edge and reliably wins the first (trivial) stages, then the
-  // player GROWS it by placing earned cubes. Balanced via tools/balance.ts sim.
-  const heroBuild: Build = [
-    { gx: 0, gy: 0, type: 'core' },
-    { gx: 1, gy: 0, type: 'force' },
-  ];
-
   return {
-    level: 1,
-    xp: 0,
-    essence: 0,
-    inventory,
-    heroBuild,
     coins: 0,
-    campaign: { level: 1, stage: 0 },
-    onboarded: false,
-    // Starter cubes count as already-seen so the first earned cube of a NEW type
-    // is the one that triggers the "Новий тип" callout.
-    seenTypes: [...new Set([
-      ...Object.keys(inventory).filter(k => (inventory[k] ?? 0) > 0),
-      ...heroBuild.map(p => p.type),
-    ])],
+    accountLevel: 1,
+    accountXp: 0,
+    run: { level: 1, stage: 0, build: starterBuild() },
+    seenTypes: ['core'],
     lossStreak: 0,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Shared level-up loop — mutates state.xp / state.level / state.inventory
-// and appends levelUp + loot events.
-// ---------------------------------------------------------------------------
-function applyXpAndLevelUp(
-  state: SaveState,
-  xpGained: number,
-  events: RewardEvent[],
-  rng?: () => number,
-): void {
-  state.xp += xpGained;
-  events.push({ kind: 'xp', n: xpGained });
-
-  let lootCounter = state.level * 1000 + state.xp; // unique seed per state snapshot
-  while (state.xp >= xpToNext(state.level)) {
-    state.xp -= xpToNext(state.level);
-    state.level++;
-
-    // Per-level loot batch (1–2 cubes), using rng if provided, else seeded from level
-    const levelRng = rng ?? makeLootRng(lootCounter++);
-    const n = 1 + ((levelRng() * 2) | 0); // 1 or 2
-    const granted = grantLootInto(state.inventory, n, levelRng);
-
-    events.push({ kind: 'levelUp', level: state.level });
-    if (granted.length > 0) {
-      events.push({ kind: 'loot', cubes: granted });
-      noteSeen(state, granted, events);
-    }
-  }
+/** Reset the run's stage + build to the level start (used on level start + loss). */
+export function resetRunBuild(state: SaveState): void {
+  state.run.stage = 0;
+  state.run.build = starterBuild();
 }
 
 // ---------------------------------------------------------------------------
-// addFightReward — mutates state, returns events
+// winStage — grant stage-win rewards (coins + account XP), advance the stage.
 // ---------------------------------------------------------------------------
-export function addFightReward(
+export function winStage(
   state: SaveState,
-  result: FightResult,
-  rng?: () => number,
+  reward: { xp: number; coins: number },
+  _rng?: () => number,
 ): { events: RewardEvent[] } {
   const events: RewardEvent[] = [];
 
-  // Essence (always)
-  state.essence += ESSENCE_PER_FIGHT;
-  events.push({ kind: 'essence', n: ESSENCE_PER_FIGHT });
+  // Coins (permanent wallet)
+  state.coins += reward.coins;
+  events.push({ kind: 'coins', n: reward.coins });
 
-  // XP (delegates to shared helper)
-  const xpGained =
-    result.stagesCleared * XP_PER_STAGE + (result.won ? XP_WIN_BONUS : XP_LOSS);
-  applyXpAndLevelUp(state, xpGained, events, rng);
+  // Account XP + level-up loop. Account level's only effect is the HP bonus —
+  // NO loot on level-up.
+  state.accountXp += reward.xp;
+  events.push({ kind: 'xp', n: reward.xp });
+  while (state.accountXp >= accountXpToNext(state.accountLevel)) {
+    state.accountXp -= accountXpToNext(state.accountLevel);
+    state.accountLevel++;
+    events.push({ kind: 'levelUp', level: state.accountLevel });
+  }
+
+  // Advance to the next stage of the run.
+  state.run.stage++;
 
   return { events };
 }
 
 // ---------------------------------------------------------------------------
-// addKillReward — grant coins + optional cube + xp (with level-up loop)
+// completeLevel — boss cleared: advance chapter, reset the build.
 // ---------------------------------------------------------------------------
-export function addKillReward(
-  state: SaveState,
-  r: { xp: number; coins: number; cube?: string },
-  rng?: () => number,
-): { events: RewardEvent[] } {
-  const events: RewardEvent[] = [];
-
-  // Coins
-  state.coins += r.coins;
-  events.push({ kind: 'coins', n: r.coins });
-
-  // Optional guaranteed cube
-  if (r.cube !== undefined) {
-    state.inventory[r.cube] = (state.inventory[r.cube] ?? 0) + 1;
-    events.push({ kind: 'cube', cube: r.cube });
-    noteSeen(state, [r.cube], events);
-  }
-
-  // XP + level-up loop (reuses shared helper)
-  applyXpAndLevelUp(state, r.xp, events, rng);
-
-  return { events };
+export function completeLevel(state: SaveState): void {
+  state.run.level++;
+  resetRunBuild(state);
 }
 
 // ---------------------------------------------------------------------------
-// openChest — spend CHEST_COST coins, grant 1–3 random cubes
+// loseRun — roguelite restart: update stuck tracking, reset the build.
+// Coins are NOT touched.
 // ---------------------------------------------------------------------------
-export function openChest(
-  state: SaveState,
-  rng?: () => number,
-): { ok: boolean; cubes: string[]; events: RewardEvent[] } {
-  if (state.coins < CHEST_COST) {
-    return { ok: false, cubes: [], events: [] };
+export function loseRun(state: SaveState): void {
+  const here = { level: state.run.level, stage: state.run.stage };
+  if (
+    state.lossStage &&
+    state.lossStage.level === here.level &&
+    state.lossStage.stage === here.stage
+  ) {
+    state.lossStreak = (state.lossStreak ?? 0) + 1;
+  } else {
+    state.lossStreak = 1;
+    state.lossStage = here;
   }
+  resetRunBuild(state);
+}
 
-  state.coins -= CHEST_COST;
-
-  // One cube per chest (director: limit money-bought drop to 1).
-  const effectiveRng = rng ?? mulberry32(state.level * 9999 + state.coins);
-  const granted = grantLootInto(state.inventory, 1, effectiveRng);
-  const events: RewardEvent[] = [{ kind: 'loot', cubes: granted }];
-  noteSeen(state, granted, events);
-
-  return { ok: true, cubes: granted, events };
+// ---------------------------------------------------------------------------
+// buyCube — spend coins. Placement on the grid is the caller's job
+// (mutating run.build + calling noteSeen).
+// ---------------------------------------------------------------------------
+export function buyCube(state: SaveState, price: number): boolean {
+  if (state.coins >= price) {
+    state.coins -= price;
+    return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,13 +226,17 @@ export function openChest(
 // ---------------------------------------------------------------------------
 const SAVE_KEY = 'pockethero.save';
 // Bump when the save schema or the starter changes; older saves are reset to
-// defaultState so everyone gets the current starter hero + balance.
-const SAVE_VERSION = 4;
+// defaultState so everyone gets the current shape + balance.
+const SAVE_VERSION = 5;
 
-export function save(state: SaveState, storage?: StorageLike): void {
-  const s: StorageLike | undefined = storage ?? (typeof globalThis !== 'undefined' && 'localStorage' in globalThis
+function resolveStorage(storage?: StorageLike): StorageLike | undefined {
+  return storage ?? (typeof globalThis !== 'undefined' && 'localStorage' in globalThis
     ? (globalThis as unknown as { localStorage: StorageLike }).localStorage
     : undefined);
+}
+
+export function save(state: SaveState, storage?: StorageLike): void {
+  const s = resolveStorage(storage);
   if (!s) return;
   try {
     s.setItem(SAVE_KEY, JSON.stringify({ ...state, __v: SAVE_VERSION }));
@@ -304,50 +246,46 @@ export function save(state: SaveState, storage?: StorageLike): void {
 }
 
 export function load(storage?: StorageLike): SaveState {
-  const s: StorageLike | undefined = storage ?? (typeof globalThis !== 'undefined' && 'localStorage' in globalThis
-    ? (globalThis as unknown as { localStorage: StorageLike }).localStorage
-    : undefined);
+  const s = resolveStorage(storage);
   if (s) {
     try {
       const raw = s.getItem(SAVE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<SaveState> & { __v?: number };
-        // Reset pre-version-2 saves (old starter / schema) to the current default
+        // Reset any non-v5 save (old schema) to the current default.
         if (parsed.__v !== SAVE_VERSION) return defaultState();
-        // Validate shape — fallback to default if malformed
+
+        const run = parsed.run as SaveState['run'] | undefined;
         if (
-          typeof parsed.level === 'number' &&
-          typeof parsed.xp === 'number' &&
-          typeof parsed.essence === 'number' &&
-          typeof parsed.inventory === 'object' && parsed.inventory !== null &&
-          Array.isArray(parsed.heroBuild)
+          typeof parsed.coins === 'number' &&
+          typeof parsed.accountLevel === 'number' &&
+          typeof parsed.accountXp === 'number' &&
+          run !== undefined && run !== null && typeof run === 'object' &&
+          typeof run.level === 'number' &&
+          typeof run.stage === 'number' &&
+          Array.isArray(run.build)
         ) {
+          const build = run.build as Build;
+          const seenTypes = Array.isArray(parsed.seenTypes)
+            ? parsed.seenTypes
+            : [...new Set(build.map(p => p.type))];
           return {
-            level: parsed.level,
-            xp: parsed.xp,
-            essence: parsed.essence,
-            inventory: parsed.inventory,
-            heroBuild: parsed.heroBuild,
-            // Tolerate old saves missing coins / campaign — fill defaults
-            coins: typeof parsed.coins === 'number' ? parsed.coins : 0,
-            campaign:
-              parsed.campaign !== null &&
-              typeof parsed.campaign === 'object' &&
-              typeof (parsed.campaign as Record<string, unknown>)['level'] === 'number' &&
-              typeof (parsed.campaign as Record<string, unknown>)['stage'] === 'number'
-                ? { level: (parsed.campaign as { level: number; stage: number }).level, stage: (parsed.campaign as { level: number; stage: number }).stage }
-                : { level: 1, stage: 0 },
-            onboarded: parsed.onboarded === true,
-            // Seed from currently-owned cubes if the save predates seenTypes, so
-            // existing cubes don't all spuriously read as "new".
-            seenTypes: Array.isArray(parsed.seenTypes)
-              ? parsed.seenTypes
-              : [...new Set([
-                  ...Object.keys(parsed.inventory).filter(k => (parsed.inventory![k] ?? 0) > 0),
-                  ...parsed.heroBuild.map(p => p.type),
-                ])],
+            coins: parsed.coins,
+            accountLevel: parsed.accountLevel,
+            accountXp: parsed.accountXp,
+            run: { level: run.level, stage: run.stage, build },
+            seenTypes,
             lossStreak: typeof parsed.lossStreak === 'number' ? parsed.lossStreak : 0,
-            lossStage: parsed.lossStage,
+            lossStage:
+              parsed.lossStage !== null &&
+              typeof parsed.lossStage === 'object' &&
+              typeof (parsed.lossStage as Record<string, unknown>)['level'] === 'number' &&
+              typeof (parsed.lossStage as Record<string, unknown>)['stage'] === 'number'
+                ? {
+                    level: (parsed.lossStage as { level: number; stage: number }).level,
+                    stage: (parsed.lossStage as { level: number; stage: number }).stage,
+                  }
+                : undefined,
           };
         }
       }

@@ -5,6 +5,7 @@
 
 import { CUBES } from '../index';
 import type { Build } from '../index';
+import { weightedCubePick } from './meta';
 
 // ---------------------------------------------------------------------------
 // Stage count per level
@@ -144,7 +145,7 @@ export function genEnemy(level: number, stage: number): EnemySpec {
 export function stageReward(
   level: number,
   stage: number,
-): { xp: number; coins: number; cube?: string } {
+): { xp: number; coins: number } {
   const tier = stageTier(level, stage);
   const tierMul = tier === 'boss' ? 4 : tier === 'elite' ? 2 : 1;
 
@@ -154,18 +155,29 @@ export function stageReward(
   const xp = Math.round(baseXp * tierMul);
   const coins = Math.round(baseCoins * tierMul);
 
-  // Onboarding cube schedule: Level 1, a guaranteed cube on the first ~10 stages
-  // so the player earns variety + growth material while learning to push past stage 3.
-  const L1_CUBES = [
-    'force', 'vital', 'plate', 'force', 'swift',
-    'focus', 'vital', 'force', 'plate', 'ember',
-  ] as const;
-  let cube: string | undefined;
-  if (level === 1 && stage < L1_CUBES.length) {
-    cube = L1_CUBES[stage];
-  }
+  return { xp, coins };
+}
 
-  return { xp, coins, cube };
+// ---------------------------------------------------------------------------
+// Shop roll (§C) — 3 rarity-weighted placeable cube offers, deterministic
+// per (level, stage). Reuses meta's weightedCubePick rarity weighting.
+// ---------------------------------------------------------------------------
+export function rollShop(level: number, stage: number): string[] {
+  const rng = mulberry32(level * 1000 + stage * 7 + 31);
+  const offers: string[] = [];
+  for (let i = 0; i < 3; i++) offers.push(weightedCubePick(rng));
+  return offers;
+}
+
+// ---------------------------------------------------------------------------
+// Cube price (§C) — base by rarity, scaling slightly with stage.
+// ---------------------------------------------------------------------------
+const RARITY_PRICE: Record<string, number> = { common: 3, rare: 6, epic: 10, legendary: 16 };
+
+export function cubePrice(type: string, stage: number): number {
+  const rarity = CUBES[type]?.rarity ?? 'common';
+  const base = RARITY_PRICE[rarity] ?? RARITY_PRICE['common']!;
+  return Math.max(1, Math.round(base * (1 + stage * 0.08)));
 }
 
 // ---------------------------------------------------------------------------

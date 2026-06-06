@@ -1,20 +1,24 @@
 /**
- * tests/meta.test.ts — unit tests for src/game/meta.ts
- * Uses a seeded RNG for determinism; exercises all public exports.
+ * tests/meta.test.ts — unit tests for src/game/meta.ts (roguelite shop rework).
+ * Uses a seeded RNG for determinism; exercises the new public exports.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
-  xpToNext,
-  addFightReward,
+  accountXpToNext,
+  accountStatBonus,
+  ACCOUNT_HP_PER_LEVEL,
   defaultState,
+  resetRunBuild,
+  winStage,
+  completeLevel,
+  loseRun,
+  buyCube,
+  noteSeen,
+  weightedCubePick,
+  grantLootInto,
   save,
   load,
-  grantLootInto,
-  ESSENCE_PER_FIGHT,
-  XP_PER_STAGE,
-  XP_WIN_BONUS,
-  XP_LOSS,
 } from '../src/game/meta';
 import type { SaveState, StorageLike, RewardEvent } from '../src/game/meta';
 
@@ -30,7 +34,6 @@ function mulberry32(a: number): () => number {
   };
 }
 
-/** In-memory StorageLike shim for testing */
 function makeStorage(): StorageLike & { data: Record<string, string> } {
   const data: Record<string, string> = {};
   return {
@@ -45,299 +48,403 @@ function freshState(): SaveState {
 }
 
 // ---------------------------------------------------------------------------
-// xpToNext curve
+// accountXpToNext curve
 // ---------------------------------------------------------------------------
-describe('xpToNext', () => {
-  it('level 1 → 75', () => {
-    expect(xpToNext(1)).toBe(75);
-  });
-  it('level 2 → 100', () => {
-    expect(xpToNext(2)).toBe(100);
-  });
-  it('level 10 → 300', () => {
-    expect(xpToNext(10)).toBe(300);
-  });
+describe('accountXpToNext', () => {
+  it('level 1 → 75', () => expect(accountXpToNext(1)).toBe(75));
+  it('level 2 → 100', () => expect(accountXpToNext(2)).toBe(100));
+  it('level 10 → 300', () => expect(accountXpToNext(10)).toBe(300));
   it('scales linearly with level', () => {
     for (let l = 1; l <= 20; l++) {
-      expect(xpToNext(l)).toBe(50 + l * 25);
+      expect(accountXpToNext(l)).toBe(50 + l * 25);
     }
   });
-});
-
-// ---------------------------------------------------------------------------
-// Reward constants
-// ---------------------------------------------------------------------------
-describe('reward constants', () => {
-  it('ESSENCE_PER_FIGHT = 5', () => expect(ESSENCE_PER_FIGHT).toBe(5));
-  it('XP_PER_STAGE = 20',     () => expect(XP_PER_STAGE).toBe(20));
-  it('XP_WIN_BONUS = 30',     () => expect(XP_WIN_BONUS).toBe(30));
-  it('XP_LOSS = 10',          () => expect(XP_LOSS).toBe(10));
 });
 
 // ---------------------------------------------------------------------------
 // defaultState shape
 // ---------------------------------------------------------------------------
 describe('defaultState', () => {
-  it('starts at level 1', () => {
-    expect(freshState().level).toBe(1);
-  });
-  it('starts at 0 xp', () => {
-    expect(freshState().xp).toBe(0);
-  });
-  it('starts at 0 essence', () => {
-    expect(freshState().essence).toBe(0);
-  });
-  it('has a tiny starter heroBuild (grow from 1-2 cubes): core + force, in the L1 grid', () => {
+  it('starts with 0 coins', () => expect(freshState().coins).toBe(0));
+  it('starts at accountLevel 1', () => expect(freshState().accountLevel).toBe(1));
+  it('starts at 0 accountXp', () => expect(freshState().accountXp).toBe(0));
+  it('run starts at level 1, stage 0', () => {
     const s = freshState();
-    // tiny — 1 to 3 cubes (grow from here)
-    expect(s.heroBuild.length).toBeGreaterThanOrEqual(1);
-    expect(s.heroBuild.length).toBeLessThanOrEqual(3);
-    const cores = s.heroBuild.filter(p => p.type === 'core');
-    expect(cores).toHaveLength(1);
-    expect(cores[0]!.gx).toBe(0);
-    expect(cores[0]!.gy).toBe(0);
-    for (const p of s.heroBuild) {
-      expect(Math.abs(p.gx)).toBeLessThanOrEqual(2);
-      expect(Math.abs(p.gy)).toBeLessThanOrEqual(2);
+    expect(s.run.level).toBe(1);
+    expect(s.run.stage).toBe(0);
+  });
+  it('run.build is a single core at [0,0]', () => {
+    const s = freshState();
+    expect(s.run.build).toHaveLength(1);
+    expect(s.run.build[0]).toEqual({ gx: 0, gy: 0, type: 'core' });
+  });
+  it('seenTypes seeded with core', () => {
+    expect(freshState().seenTypes).toEqual(['core']);
+  });
+  it('lossStreak starts at 0', () => expect(freshState().lossStreak).toBe(0));
+  it('has no persistent inventory / heroBuild / essence / campaign', () => {
+    const s = freshState() as unknown as Record<string, unknown>;
+    expect(s['inventory']).toBeUndefined();
+    expect(s['heroBuild']).toBeUndefined();
+    expect(s['essence']).toBeUndefined();
+    expect(s['campaign']).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resetRunBuild
+// ---------------------------------------------------------------------------
+describe('resetRunBuild', () => {
+  it('resets stage to 0 and build to a single core', () => {
+    const s = freshState();
+    s.run.stage = 7;
+    s.run.build = [
+      { gx: 0, gy: 0, type: 'core' },
+      { gx: 1, gy: 0, type: 'force' },
+    ];
+    resetRunBuild(s);
+    expect(s.run.stage).toBe(0);
+    expect(s.run.build).toEqual([{ gx: 0, gy: 0, type: 'core' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// winStage
+// ---------------------------------------------------------------------------
+describe('winStage', () => {
+  it('adds coins to the wallet and emits a coins event', () => {
+    const s = freshState();
+    const { events } = winStage(s, { xp: 0, coins: 15 });
+    expect(s.coins).toBe(15);
+    const ev = events.find(e => e.kind === 'coins');
+    expect((ev as { kind: 'coins'; n: number }).n).toBe(15);
+  });
+
+  it('adds accountXp and emits an xp event', () => {
+    const s = freshState();
+    const { events } = winStage(s, { xp: 30, coins: 0 });
+    expect(s.accountXp).toBe(30);
+    const ev = events.find(e => e.kind === 'xp');
+    expect((ev as { kind: 'xp'; n: number }).n).toBe(30);
+  });
+
+  it('advances run.stage', () => {
+    const s = freshState();
+    winStage(s, { xp: 0, coins: 0 });
+    expect(s.run.stage).toBe(1);
+    winStage(s, { xp: 0, coins: 0 });
+    expect(s.run.stage).toBe(2);
+  });
+
+  it('accumulates coins across multiple stages', () => {
+    const s = freshState();
+    winStage(s, { xp: 0, coins: 10 });
+    winStage(s, { xp: 0, coins: 25 });
+    expect(s.coins).toBe(35);
+  });
+
+  it('levels up the account when accountXp crosses the threshold', () => {
+    const s = freshState();
+    s.accountXp = accountXpToNext(1) - 1; // 74
+    winStage(s, { xp: 10, coins: 0 });    // 84 → level up, leftover 9
+    expect(s.accountLevel).toBe(2);
+    expect(s.accountXp).toBe(9);
+  });
+
+  it('emits a levelUp event with the new account level', () => {
+    const s = freshState();
+    s.accountXp = accountXpToNext(1) - 1;
+    const { events } = winStage(s, { xp: 5, coins: 0 });
+    const ev = events.find(e => e.kind === 'levelUp');
+    expect((ev as { kind: 'levelUp'; level: number }).level).toBe(2);
+  });
+
+  it('handles multi-level-up in one reward', () => {
+    const s = freshState();
+    // xpToNext(1)=75, (2)=100, (3)=125 → 300 total to reach level 4
+    const { events } = winStage(s, { xp: 320, coins: 0 });
+    expect(s.accountLevel).toBeGreaterThanOrEqual(4);
+    const levelUps = events.filter(e => e.kind === 'levelUp');
+    expect(levelUps.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('grants NO loot on level-up (only HP bonus via accountStatBonus)', () => {
+    const s = freshState();
+    const { events } = winStage(s, { xp: 320, coins: 0 });
+    expect(events.find(e => e.kind === 'cube')).toBeUndefined();
+    // RewardEvent union no longer has a 'loot' variant — assert via kinds.
+    const kinds = events.map(e => e.kind);
+    expect(kinds).not.toContain('loot');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// completeLevel
+// ---------------------------------------------------------------------------
+describe('completeLevel', () => {
+  it('advances run.level and resets stage + build', () => {
+    const s = freshState();
+    s.run.stage = 19;
+    s.run.build = [
+      { gx: 0, gy: 0, type: 'core' },
+      { gx: 1, gy: 0, type: 'force' },
+    ];
+    completeLevel(s);
+    expect(s.run.level).toBe(2);
+    expect(s.run.stage).toBe(0);
+    expect(s.run.build).toEqual([{ gx: 0, gy: 0, type: 'core' }]);
+  });
+
+  it('does not touch coins or account progression', () => {
+    const s = freshState();
+    s.coins = 99;
+    s.accountLevel = 4;
+    s.accountXp = 12;
+    completeLevel(s);
+    expect(s.coins).toBe(99);
+    expect(s.accountLevel).toBe(4);
+    expect(s.accountXp).toBe(12);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loseRun
+// ---------------------------------------------------------------------------
+describe('loseRun', () => {
+  it('resets the build but keeps coins', () => {
+    const s = freshState();
+    s.coins = 50;
+    s.run.stage = 6;
+    s.run.build = [
+      { gx: 0, gy: 0, type: 'core' },
+      { gx: 1, gy: 0, type: 'force' },
+    ];
+    loseRun(s);
+    expect(s.coins).toBe(50);
+    expect(s.run.stage).toBe(0);
+    expect(s.run.build).toEqual([{ gx: 0, gy: 0, type: 'core' }]);
+  });
+
+  it('first loss at a stage sets lossStreak 1 and lossStage', () => {
+    const s = freshState();
+    s.run.level = 1;
+    s.run.stage = 3;
+    loseRun(s);
+    expect(s.lossStreak).toBe(1);
+    expect(s.lossStage).toEqual({ level: 1, stage: 3 });
+  });
+
+  it('repeated loss at the same stage increments lossStreak', () => {
+    const s = freshState();
+    s.run.level = 1;
+    s.run.stage = 3;
+    loseRun(s); // resets stage to 0, so we set it back to mimic re-reaching stage 3
+    s.run.stage = 3;
+    loseRun(s);
+    s.run.stage = 3;
+    loseRun(s);
+    expect(s.lossStreak).toBe(3);
+    expect(s.lossStage).toEqual({ level: 1, stage: 3 });
+  });
+
+  it('loss at a different stage resets lossStreak to 1', () => {
+    const s = freshState();
+    s.run.level = 1;
+    s.run.stage = 3;
+    loseRun(s);
+    expect(s.lossStreak).toBe(1);
+    s.run.stage = 5;
+    loseRun(s);
+    expect(s.lossStreak).toBe(1);
+    expect(s.lossStage).toEqual({ level: 1, stage: 5 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buyCube
+// ---------------------------------------------------------------------------
+describe('buyCube', () => {
+  it('succeeds and deducts coins when affordable', () => {
+    const s = freshState();
+    s.coins = 10;
+    expect(buyCube(s, 6)).toBe(true);
+    expect(s.coins).toBe(4);
+  });
+
+  it('succeeds at exact price', () => {
+    const s = freshState();
+    s.coins = 6;
+    expect(buyCube(s, 6)).toBe(true);
+    expect(s.coins).toBe(0);
+  });
+
+  it('fails and leaves coins untouched when unaffordable', () => {
+    const s = freshState();
+    s.coins = 5;
+    expect(buyCube(s, 6)).toBe(false);
+    expect(s.coins).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// accountStatBonus
+// ---------------------------------------------------------------------------
+describe('accountStatBonus', () => {
+  it('is 0 at account level 1', () => {
+    const s = freshState();
+    expect(accountStatBonus(s)).toEqual({ maxHpAdd: 0 });
+  });
+  it('grants ACCOUNT_HP_PER_LEVEL per level above 1', () => {
+    const s = freshState();
+    s.accountLevel = 5;
+    expect(accountStatBonus(s)).toEqual({ maxHpAdd: ACCOUNT_HP_PER_LEVEL * 4 });
+  });
+  it('ACCOUNT_HP_PER_LEVEL is 3', () => expect(ACCOUNT_HP_PER_LEVEL).toBe(3));
+});
+
+// ---------------------------------------------------------------------------
+// noteSeen
+// ---------------------------------------------------------------------------
+describe('noteSeen', () => {
+  it('emits newType for first-ever types and records them', () => {
+    const s = freshState(); // seenTypes = ['core']
+    const events: RewardEvent[] = [];
+    noteSeen(s, ['force', 'core', 'vital'], events);
+    const newTypes = events.filter(e => e.kind === 'newType').map(e => (e as { cube: string }).cube);
+    expect(newTypes).toEqual(['force', 'vital']);
+    expect(s.seenTypes).toContain('force');
+    expect(s.seenTypes).toContain('vital');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// weightedCubePick / grantLootInto (kept exports)
+// ---------------------------------------------------------------------------
+describe('weightedCubePick', () => {
+  it('never returns core', () => {
+    const rng = mulberry32(123);
+    for (let i = 0; i < 200; i++) {
+      expect(weightedCubePick(rng)).not.toBe('core');
     }
-    // has at least one attack cube so the first stages are winnable
-    expect(s.heroBuild.filter(p => p.type === 'force').length).toBeGreaterThanOrEqual(1);
   });
-  it('inventory contains placeable cube keys', () => {
-    const inv = freshState().inventory;
-    expect(Object.keys(inv).length).toBeGreaterThan(10);
-    // core is NOT in inventory
-    expect('core' in inv).toBe(false);
-    // some known keys are present
-    expect('vital' in inv).toBe(true);
-    expect('force' in inv).toBe(true);
-  });
-  it('starter inventory has some cubes (from simulated initial loot)', () => {
-    const inv = freshState().inventory;
-    const total = Object.values(inv).reduce((a, b) => a + b, 0);
-    expect(total).toBe(16); // 8+8 from initial loot grants
+  it('is deterministic for a given seed', () => {
+    const a = mulberry32(7);
+    const b = mulberry32(7);
+    for (let i = 0; i < 20; i++) expect(weightedCubePick(a)).toBe(weightedCubePick(b));
   });
 });
 
-// ---------------------------------------------------------------------------
-// addFightReward — Essence always
-// ---------------------------------------------------------------------------
-describe('addFightReward — essence', () => {
-  it('grants ESSENCE_PER_FIGHT on win', () => {
-    const s = freshState();
-    addFightReward(s, { won: true, stagesCleared: 1 }, mulberry32(42));
-    expect(s.essence).toBe(ESSENCE_PER_FIGHT);
-  });
-  it('grants ESSENCE_PER_FIGHT on loss', () => {
-    const s = freshState();
-    addFightReward(s, { won: false, stagesCleared: 0 }, mulberry32(42));
-    expect(s.essence).toBe(ESSENCE_PER_FIGHT);
-  });
-  it('accumulates across multiple fights', () => {
-    const s = freshState();
-    addFightReward(s, { won: false, stagesCleared: 0 }, mulberry32(1));
-    addFightReward(s, { won: false, stagesCleared: 0 }, mulberry32(2));
-    expect(s.essence).toBe(ESSENCE_PER_FIGHT * 2);
-  });
-  it('emits an essence event', () => {
-    const s = freshState();
-    const { events } = addFightReward(s, { won: true, stagesCleared: 0 }, mulberry32(9));
-    const ess = events.find(e => e.kind === 'essence');
-    expect(ess).toBeDefined();
-    expect((ess as { kind: 'essence'; n: number }).n).toBe(ESSENCE_PER_FIGHT);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// addFightReward — XP win vs loss
-// ---------------------------------------------------------------------------
-describe('addFightReward — XP', () => {
-  it('win with 2 stages → XP_WIN_BONUS + 2*XP_PER_STAGE', () => {
-    const s = freshState();
-    // Give enough budget to not level-up to keep test simple
-    // level 1: xpToNext = 75. won=true stagesCleared=1 → 30+20=50 < 75 → no level up
-    addFightReward(s, { won: true, stagesCleared: 1 }, mulberry32(99));
-    expect(s.xp).toBe(XP_WIN_BONUS + XP_PER_STAGE);
-  });
-  it('loss with 0 stages → XP_LOSS', () => {
-    const s = freshState();
-    addFightReward(s, { won: false, stagesCleared: 0 }, mulberry32(99));
-    expect(s.xp).toBe(XP_LOSS);
-  });
-  it('emits an xp event with correct n', () => {
-    const s = freshState();
-    const { events } = addFightReward(s, { won: true, stagesCleared: 2 }, mulberry32(7));
-    const xpEv = events.find(e => e.kind === 'xp');
-    expect(xpEv).toBeDefined();
-    expect((xpEv as { kind: 'xp'; n: number }).n).toBe(XP_WIN_BONUS + 2 * XP_PER_STAGE);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// addFightReward — level up
-// ---------------------------------------------------------------------------
-describe('addFightReward — level up', () => {
-  it('levels up when xp crosses xpToNext', () => {
-    const s = freshState();
-    s.xp = xpToNext(1) - 1; // one below threshold
-    // win + 1 stage = 50xp → pushes past threshold
-    addFightReward(s, { won: true, stagesCleared: 1 }, mulberry32(5));
-    expect(s.level).toBe(2);
-  });
-  it('leftover XP rolls over correctly', () => {
-    const s = freshState();
-    s.xp = xpToNext(1) - XP_LOSS + 1; // just above threshold with a loss
-    // loss = +10 xp → level up with 1 xp rollover... Let's compute exactly
-    // xpToNext(1) = 75. s.xp = 66. loss gives 10 → total = 76. → level up, leftover = 76-75 = 1
-    s.xp = 66;
-    addFightReward(s, { won: false, stagesCleared: 0 }, mulberry32(5));
-    expect(s.level).toBe(2);
-    expect(s.xp).toBe(1);
-  });
-  it('emits levelUp event with correct level', () => {
-    const s = freshState();
-    s.xp = xpToNext(1) - 1;
-    const { events } = addFightReward(s, { won: true, stagesCleared: 1 }, mulberry32(3));
-    const lvEv = events.find(e => e.kind === 'levelUp');
-    expect(lvEv).toBeDefined();
-    expect((lvEv as { kind: 'levelUp'; level: number }).level).toBe(2);
-  });
-  it('multi-level-up in one big reward', () => {
-    const s = freshState();
-    s.level = 1; s.xp = 0;
-    // xpToNext(1)=75, xpToNext(2)=100, xpToNext(3)=125 → total to lvl4 = 300
-    // Give massive xp: won=true stagesCleared=10 → 30 + 10*20 = 230
-    // Actually let's pre-load xp
-    s.xp = 270;
-    addFightReward(s, { won: true, stagesCleared: 1 }, mulberry32(1));
-    // 270 + 50 = 320
-    // lv1→lv2 at 75: 320-75=245 leftover
-    // lv2→lv3 at 100: 245-100=145 leftover
-    // lv3→lv4 at 125: 145-125=20 leftover
-    // lv4 still below xpToNext(4)=150, so level = 4
-    expect(s.level).toBeGreaterThanOrEqual(3);
-    const levelEvents = (evs: RewardEvent[]) => evs.filter(e => e.kind === 'levelUp');
-    const { events } = (() => {
-      const s2 = freshState();
-      s2.xp = 270;
-      return addFightReward(s2, { won: true, stagesCleared: 1 }, mulberry32(1));
-    })();
-    expect(levelEvents(events).length).toBeGreaterThanOrEqual(3);
-  });
-  it('loot is granted on level-up and grows inventory', () => {
-    const s = freshState();
-    const invBefore = Object.values(s.inventory).reduce((a, b) => a + b, 0);
-    s.xp = xpToNext(1) - 1; // will level up on next reward
-    addFightReward(s, { won: true, stagesCleared: 1 }, mulberry32(42));
-    const invAfter = Object.values(s.inventory).reduce((a, b) => a + b, 0);
-    expect(invAfter).toBeGreaterThan(invBefore);
-  });
-  it('loot event contains cube names', () => {
-    const s = freshState();
-    s.xp = xpToNext(1) - 1;
-    const { events } = addFightReward(s, { won: true, stagesCleared: 1 }, mulberry32(42));
-    const lootEv = events.find(e => e.kind === 'loot');
-    expect(lootEv).toBeDefined();
-    expect((lootEv as { kind: 'loot'; cubes: string[] }).cubes.length).toBeGreaterThanOrEqual(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// grantLootInto
-// ---------------------------------------------------------------------------
 describe('grantLootInto', () => {
   it('adds exactly n cubes to inventory', () => {
     const inv: Record<string, number> = {};
-    const rng = mulberry32(99);
-    const cubes = grantLootInto(inv, 5, rng);
+    const cubes = grantLootInto(inv, 5, mulberry32(99));
     expect(cubes).toHaveLength(5);
     const total = Object.values(inv).reduce((a, b) => a + b, 0);
     expect(total).toBe(5);
   });
-  it('returned keys match inventory contents', () => {
-    const inv: Record<string, number> = {};
-    const rng = mulberry32(7);
-    const cubes = grantLootInto(inv, 3, rng);
-    for (const k of cubes) {
-      expect(inv[k]).toBeGreaterThanOrEqual(1);
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
-// save / load round-trip
+// save / load round-trip (__v:5)
 // ---------------------------------------------------------------------------
 describe('save/load round-trip', () => {
-  it('save then load returns same state', () => {
+  it('save then load returns the same state', () => {
     const storage = makeStorage();
     const s = freshState();
-    s.level = 3; s.xp = 42; s.essence = 15;
-    s.inventory['force'] = 5;
-    s.heroBuild = [{ gx: 0, gy: 0, type: 'core' }, { gx: 1, gy: 0, type: 'force' }];
+    s.coins = 120;
+    s.accountLevel = 3;
+    s.accountXp = 42;
+    s.run = {
+      level: 2,
+      stage: 5,
+      build: [
+        { gx: 0, gy: 0, type: 'core' },
+        { gx: 1, gy: 0, type: 'force' },
+      ],
+    };
+    s.lossStreak = 2;
+    s.lossStage = { level: 2, stage: 5 };
     save(s, storage);
     const loaded = load(storage);
-    expect(loaded.level).toBe(3);
-    expect(loaded.xp).toBe(42);
-    expect(loaded.essence).toBe(15);
-    expect(loaded.inventory['force']).toBe(5);
-    expect(loaded.heroBuild).toHaveLength(2);
+    expect(loaded.coins).toBe(120);
+    expect(loaded.accountLevel).toBe(3);
+    expect(loaded.accountXp).toBe(42);
+    expect(loaded.run.level).toBe(2);
+    expect(loaded.run.stage).toBe(5);
+    expect(loaded.run.build).toHaveLength(2);
+    expect(loaded.lossStreak).toBe(2);
+    expect(loaded.lossStage).toEqual({ level: 2, stage: 5 });
+  });
+
+  it('writes schema version 5', () => {
+    const storage = makeStorage();
+    save(freshState(), storage);
+    const raw = JSON.parse(storage.data['pockethero.save']!);
+    expect(raw.__v).toBe(5);
   });
 
   it('load with empty storage returns defaultState', () => {
-    const storage = makeStorage();
-    const loaded = load(storage);
-    expect(loaded.level).toBe(1);
-    expect(loaded.xp).toBe(0);
-    expect(loaded.essence).toBe(0);
+    const loaded = load(makeStorage());
+    expect(loaded.coins).toBe(0);
+    expect(loaded.accountLevel).toBe(1);
+    expect(loaded.run.level).toBe(1);
   });
 
   it('load with malformed JSON returns defaultState', () => {
     const storage = makeStorage();
     storage.setItem('pockethero.save', '{ invalid json {{{{');
-    const loaded = load(storage);
-    expect(loaded.level).toBe(1);
+    expect(load(storage).accountLevel).toBe(1);
   });
 
   it('load with missing fields returns defaultState', () => {
     const storage = makeStorage();
-    storage.setItem('pockethero.save', JSON.stringify({ level: 5 })); // missing fields
-    const loaded = load(storage);
-    expect(loaded.level).toBe(1); // falls back to default
+    storage.setItem('pockethero.save', JSON.stringify({ __v: 5, coins: 5 }));
+    expect(load(storage).coins).toBe(0); // falls back to default
   });
 
-  it('save is idempotent — multiple saves same state', () => {
+  it('resets a pre-v5 (old schema) save to the default', () => {
+    const storage = makeStorage();
+    storage.setItem('pockethero.save', JSON.stringify({
+      __v: 4,
+      level: 9, xp: 0, essence: 0, inventory: {},
+      heroBuild: [{ gx: 0, gy: 0, type: 'core' }],
+      coins: 999, campaign: { level: 2, stage: 8 },
+    }));
+    const loaded = load(storage);
+    expect(loaded.coins).toBe(0);
+    expect(loaded.accountLevel).toBe(1);
+    expect(loaded.run).toEqual({ level: 1, stage: 0, build: [{ gx: 0, gy: 0, type: 'core' }] });
+  });
+
+  it('resets a save with no __v to the default', () => {
+    const storage = makeStorage();
+    storage.setItem('pockethero.save', JSON.stringify({
+      coins: 50, accountLevel: 3, accountXp: 0,
+      run: { level: 2, stage: 1, build: [{ gx: 0, gy: 0, type: 'core' }] },
+    }));
+    expect(load(storage).coins).toBe(0);
+  });
+
+  it('seeds seenTypes from build types when missing in a v5 save', () => {
+    const storage = makeStorage();
+    storage.setItem('pockethero.save', JSON.stringify({
+      __v: 5,
+      coins: 0, accountLevel: 1, accountXp: 0,
+      run: { level: 1, stage: 0, build: [
+        { gx: 0, gy: 0, type: 'core' },
+        { gx: 1, gy: 0, type: 'force' },
+      ] },
+    }));
+    const loaded = load(storage);
+    expect(loaded.seenTypes).toEqual(expect.arrayContaining(['core', 'force']));
+  });
+
+  it('save is idempotent', () => {
     const storage = makeStorage();
     const s = freshState();
-    s.level = 7;
+    s.coins = 7;
     save(s, storage);
     save(s, storage);
-    const loaded = load(storage);
-    expect(loaded.level).toBe(7);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Event stream correctness
-// ---------------------------------------------------------------------------
-describe('event stream', () => {
-  it('all events present for a win with level-up', () => {
-    const s = freshState();
-    s.xp = xpToNext(1) - 1; // will level-up
-    const { events } = addFightReward(s, { won: true, stagesCleared: 1 }, mulberry32(1));
-    const kinds = events.map(e => e.kind);
-    expect(kinds).toContain('essence');
-    expect(kinds).toContain('xp');
-    expect(kinds).toContain('levelUp');
-    expect(kinds).toContain('loot');
-  });
-
-  it('loss without level-up has essence + xp only', () => {
-    const s = freshState();
-    const { events } = addFightReward(s, { won: false, stagesCleared: 0 }, mulberry32(1));
-    const kinds = events.map(e => e.kind);
-    expect(kinds).toContain('essence');
-    expect(kinds).toContain('xp');
-    expect(kinds).not.toContain('levelUp');
-    expect(kinds).not.toContain('loot');
+    expect(load(storage).coins).toBe(7);
   });
 });
