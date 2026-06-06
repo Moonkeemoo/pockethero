@@ -6,9 +6,13 @@ import { startCampaignBattle } from '../src/render/gauntlet-fight';
 import * as meta from '../src/game/meta';
 import type { Build } from '../src/index';
 import type { RewardEvent } from '../src/game/meta';
+import { sfx } from '../src/render/sfx';
 
 const state = meta.load();
 let stop: (() => void) | null = null;
+
+// Unlock WebAudio on the first user gesture (browser autoplay policy).
+window.addEventListener('pointerdown', () => sfx.resume());
 
 function showLobby(events?: RewardEvent[], lastOutcome?: 'levelCleared' | 'defeated'): void {
   stop?.(); stop = startLobby({

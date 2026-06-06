@@ -9,6 +9,7 @@ import type { Build } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
 import { xpToNext, CHEST_COST } from '../game/meta';
 import { stageCount, stageTier } from '../game/campaign';
+import { sfx } from './sfx';
 
 /* ===========================================================================
    PUBLIC ENTRY POINT
@@ -588,6 +589,7 @@ function startChestOpen(): void {
   if (chestPhase !== 'idle') return;
   if (opts.state.coins < CHEST_COST) return; // button is dimmed; ignore taps
   chestPhase = 'rattle'; chestT = 0; chestCube = null; chestParts = [];
+  sfx.chestRattle();
 }
 
 function stepChest(dt: number): void {
@@ -598,6 +600,11 @@ function stepChest(dt: number): void {
     if (!r.ok) { chestPhase = 'idle'; toastText = 'Недостатньо монет'; toastTimer = TOAST_DUR; toastAlpha = 1; return; }
     chestCube = r.cube ?? null;
     chestPhase = 'burst'; chestT = 0;
+    sfx.chestOpen();
+    if (chestCube) {
+      const rar = CUBES[chestCube]?.rarity ?? 'common';
+      if (rar === 'epic' || rar === 'legendary' || rar === 'rare') sfx.rare();
+    }
     const c = chestCenter();
     const col = chestCube ? colorOfType(chestCube) : '#ffe070';
     chestParts = [];

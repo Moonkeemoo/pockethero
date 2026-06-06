@@ -12,6 +12,7 @@ import type { Build } from '../index';
 import type { SaveState, RewardEvent } from '../game/meta';
 import { addKillReward } from '../game/meta';
 import { genEnemy, stageCount, stageTier, stageReward } from '../game/campaign';
+import { sfx } from './sfx';
 
 /* ============================================================================
    TYPES
@@ -1063,14 +1064,14 @@ export function startCampaignBattle(opts: {
       tk.x = tk.sx + (tk.tx - tk.sx) * e;
       tk.y = tk.sy + (tk.ty - tk.sy) * e - Math.sin(u * Math.PI) * 46; // arc lift
       if (u >= 1) {
-        if (tk.kind === 'coin') { runCoins2 += coinShare2; coinPillBump2 = 0.28; }
-        else { runCubes2 += 1; cubePillBump2 = 0.32; }
+        if (tk.kind === 'coin') { runCoins2 += coinShare2; coinPillBump2 = 0.28; sfx.coin(t2); }
+        else { runCubes2 += 1; cubePillBump2 = 0.32; sfx.cube(); }
         rewardTokens2.splice(i, 1);
       }
     }
     for (let i = levelUpPops2.length - 1; i >= 0; i--) {
       const p = levelUpPops2[i]!;
-      if (p.delay > 0) { p.delay -= dt; continue; }
+      if (p.delay > 0) { p.delay -= dt; if (p.delay <= 0) sfx.levelUp(); continue; }
       p.t += dt;
       if (p.t > 1.6) levelUpPops2.splice(i, 1);
     }
@@ -1522,6 +1523,7 @@ export function startCampaignBattle(opts: {
     log2.length = 0;
     const tier = stageTier(campaignLevel, currentStageIdx);
     const tierLabel = tier === 'boss' ? 'БОС' : tier === 'elite' ? 'ЕЛІТ' : 'МІНОР';
+    if (tier === 'boss') sfx.bossIntro();
     pushLog2(`— Рівень ${campaignLevel} · Етап ${currentStageIdx + 1}/${totalStages} [${tierLabel}] —`, '#9fb0c8');
     pushLog2(`${hero2.name} проти ${enemy2.name}`, '#9fb0c8');
   }
@@ -1543,13 +1545,16 @@ export function startCampaignBattle(opts: {
       hitstop2 = Math.max(hitstop2, 0.08);
       spawnRewardSpray2(stageReward(campaignLevel, currentStageIdx));
       nodeTickT2 = 0.0001;
+      sfx.stageWin();
     } else if (stageHeroWon2 && isLast) {
       // §D.2 boss cleared → level-complete ceremony (longer beat)
       resultT2 = LEVELCLEAR_DUR2;
       spawnRewardSpray2(stageReward(campaignLevel, currentStageIdx));
+      sfx.levelComplete();
     } else {
       // Defeat — full banner, time to read + tap
       resultT2 = RESULT_DUR2;
+      sfx.loss();
     }
   }
 

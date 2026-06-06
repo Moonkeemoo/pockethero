@@ -11,6 +11,7 @@ import { xpToNext, grantLootInto, save as saveMeta } from '../game/meta';
 import { detectTraits } from '../derive/detectors';
 import { SYNERGY_DEFS } from '../data/traits';
 import { MOVES, MOVE_IDS } from '../data/moves';
+import { sfx } from './sfx';
 
 // ---------------------------------------------------------------------------
 // 0. TUNABLE CONSTANTS (verbatim from poc lines 80-141)
@@ -2279,6 +2280,7 @@ export function startBuilder(opts: { state: SaveState; onFight: (build: Build) =
       coachDone = true;
       opts.state.onboarded = true;
       saveMeta(opts.state);
+      sfx.spike();
       toast('Техніку відкрито: «Шип» ⚔ — досяжність + атака!', '#ffd24a');
     }
 
